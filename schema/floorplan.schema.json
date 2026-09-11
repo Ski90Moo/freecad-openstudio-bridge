@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/freecad-bridge/floorplan.schema.json",
+  "title": "FreeCAD to OpenStudio floorplan exchange",
+  "description": "Output of fc_export_floorplan.py, input to build_osm_geometry.py and update_osm_geometry.py. All lengths are metres. Hand-authoring this file is supported; the only field that must be preserved across edits is each space's id.",
+  "type": "object",
+  "required": ["schema_version", "units", "stories"],
+  "properties": {
+    "schema_version": {
+      "enum": [1, 2],
+      "description": "1 is a flat-topped plan. 2 may also carry a roof, the per-space solids it produces, and the story an attic invents. Every version 1 plan is a valid version 2 plan; the reverse is not true, so a reader that does not understand `solid` must refuse a version 2 file rather than build the flat model by accident."
+    },
+    "source_document": {
+      "type": "string",
+      "description": "Basename of the FCStd this came from."
+    },
+    "exported_utc": {"type": "string", "format": "date-time"},
+    "units": {
+      "const": "meters",
+      "description": "Present so a future imperial variant cannot be misread."
+    },
+    "north_axis_deg": {
+      "type": "number",
+      "description": "OS:Building North Axis. Geometry is drawn relative to plan north.",
+      "default": 0
+    },
+    "stories": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/story"}
+    },
+    "roof": {
+      "$ref": "#/$defs/roof",
+      "description": "Present only when the document declares a roof. Schema version 2."
+    }
+  },
+  "$defs": {
+    "story": {
+      "type": "object",
+      "required": ["name", "elevation_m", "floor_to_floor_m", "spaces"],
+      "properties": {
+        "name": {"type": "string"},
+        "elevation_m": {
+          "type": "number",
+          "description": "Floor elevation. Negative means below grade, which makes the builder flip that story's exterior walls to Ground."
+        },
+        "floor_to_floor_m": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Height every space on this story is extruded to, unless it carries its own height_m."
+        },
+        "source_sketch": {
+          "type": "string",
+          "description": "Internal FreeCAD object name of the sketch, for traceability. Absent on a story the roof invented rather than a sketch, which carries source_object instead."
+        },
+        "source_object": {
+          "type": "string",
+          "description": "Internal FreeCAD object name of the roof solid that produced this story. Marks an attic story: it has no plan sketch and no room labels, so nothing that accounts for labels should count its spaces."
+        },
+        "spaces": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/space"}
+        }
+      }
+    },
+    "space": {
+      "type": "object",
+      "required": ["id", "name", "vertices"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable UUID, held as OS_SpaceId on the room's Draft Text label. Change propagation matches on this and nothing else, so it must never be regenerated for an existing room."
+        },
+        "room_number": {"type": "string"},
+        "name": {"type": "string"},
+        "area_m2": {
+          "type": "number",
+          "description": "Computed by FreeCAD. The builder checks the OpenStudio space against this and fails past 0.1%."
+        },
+        "height_m": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Optional per-room override of the story's floor_to_floor_m, for a double-height lobby or a bay open to the roof. Held as OS_Height_m on the room's label, where 0 means defer. Omitted whenever the room defers, so its presence marks a deliberate decision; it also joins the change-propagation hash only when present, leaving deferring rooms hashing as they did before this field existed."
+        },
+        "vertices": {
+          "type": "array",
+          "minItems": 3,
+          "description": "Wall-centerline polygon, counter-clockwise in plan, no repeated closing vertex, collinear runs already collapsed. z comes from the story elevation, not from here.",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {"type": "number"}
+          }
+        },
+        "solid": {
+          "$ref": "#/$defs/solid",
+          "description": "Present when the roof gave this space a shape a prism cannot describe. When it is here it is the geometry: vertices and height_m still describe the footprint and are still what the area check and the space-matching use, but they no longer say what gets built."
+        }
+      }
+    },
+    "solid": {
+      "type": "object",
+      "description": "A space stated as an explicit closed set of faces rather than as a floor print plus a height.",
+      "required": ["source", "surfaces"],
+      "properties": {
+        "source": {
+          "enum": ["roof-extend", "roof-attic"],
+          "description": "Which method produced this. roof-extend raised an existing room to meet the roof; roof-attic is the roof solid itself, become a space."
+        },
+        "roof_object": {
+          "type": "string",
+          "description": "Internal FreeCAD object name of the roof, for traceability."
+        },
+        "surfaces": {
+          "type": "array",
+          "minItems": 4,
+          "items": {
+            "type": "object",
+            "required": ["type", "vertices"],
+            "properties": {
+              "type": {
+                "enum": ["Floor", "Wall", "RoofCeiling"],
+                "description": "What FreeCAD made of the outward normal. OpenStudio derives this itself from the winding and is the authority; the builder compares the two and reports any disagreement, because disagreement means a face is wound inside out."
+              },
+              "vertices": {
+                "type": "array",
+                "minItems": 3,
+                "description": "Closed polygon in metres, no repeated closing vertex, wound counter-clockwise seen from outside the space so the normal points away from it. Unlike a space's plan vertices these carry z, and it is absolute model elevation, not a height above the story.",
+                "items": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {"type": "number"}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "roof": {
+      "type": "object",
+      "description": "What the document's roof objects did. Reporting, not instruction: the geometry itself lives in each space's solid, so a consumer that ignores this block still builds the right model.",
+      "properties": {
+        "method": {
+          "enum": ["Extend", "Attic", "Extend+Attic"],
+          "description": "Extend raised the spaces below to meet the roof. Attic made the roof a space of its own and turned the ceilings below it into interior surfaces. The choice is an energy question -- whether the roof construction faces conditioned air directly or across an unconditioned buffer."
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "object": {"type": "string"},
+              "label": {"type": "string"},
+              "method": {"type": "string"}
+            }
+          }
+        },
+        "base_elevation_m": {
+          "type": "number",
+          "description": "Lowest point of the roof. A space is extended when its ceiling sits within tolerance of this."
+        },
+        "ridge_elevation_m": {"type": "number"},
+        "area_m2": {
+          "type": "number",
+          "description": "Sloped area of the upward-facing roof faces -- the loss surface."
+        },
+        "plan_area_m2": {
+          "type": "number",
+          "description": "Its shadow. area_m2 over this is the price of the pitch, and on a low-slope roof it is a fraction of a percent."
+        },
+        "pitch_deg": {"type": "number"},
+        "extended": {
+          "type": "array",
+          "description": "One entry per space the Extend method reshaped.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "story": {"type": "string"},
+              "space": {"type": "string"},
+              "was_top_m": {"type": "number"},
+              "now_top_m": {"type": "number"},
+              "area_m2": {"type": "number"}
+            }
+          }
+        },
+        "attics": {
+          "type": "array",
+          "description": "One entry per Attic roof, each of which became a space.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "object": {"type": "string"},
+              "story": {"type": "string"},
+              "space": {"type": "string"},
+              "floor_elevation_m": {"type": "number"},
+              "ridge_elevation_m": {"type": "number"},
+              "floor_area_m2": {"type": "number"},
+              "area_m2": {"type": "number"},
+              "pitch_deg": {"type": "number"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

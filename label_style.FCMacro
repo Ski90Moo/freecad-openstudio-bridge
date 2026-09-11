@@ -1,0 +1,156 @@
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the FreeCAD-OpenStudio bridge contributors
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.  See LICENSE for the full text.
+
+"""Make the bridge's room labels visible and easy to click.
+
+Run from the GUI: Macro -> Macros... -> Execute, with the seeded document
+open and active.
+
+Why this cannot live in fc_seed_labels.py: Visibility, FontSize, TextColor and
+DisplayMode are ViewObject properties, and a headless FreeCAD session creates
+no ViewObjects at all (obj.ViewObject is None).  So the seeder records the
+intended size on the document as OS_LabelFontSize_mm and this macro applies
+it.
+
+Two separate things hide a label, and a document can have both at once --
+measured on FloorplanTest-02, where all 42 labels were hidden *and* still at
+FreeCAD's 3.175 mm default:
+
+  Visibility=false   nothing is drawn.  Set on the label, and again on the
+                     group that holds it: a hidden group hides its children
+                     however visible they are individually.
+  FontSize           the label is drawn, at one part in sixteen thousand of
+                     the building.  Indistinguishable from not being there.
+
+Fixing one and not the other looks exactly like fixing neither, which is why
+this macro now does both.
+
+Left at FreeCAD's default, a Draft Text is textheight = 3.175 mm.  Against a
+50 m building that is one part in sixteen thousand, which reads as "the labels
+did not get created".  They did; they are microscopic.
+
+------------------------------------------------------------------------
+DISPLAY_MODE decides how hard the labels are to hit with the cursor:
+
+  "World"   SoAsciiText -- real 3D geometry, scales with zoom.  Picking hits
+            only the filled glyph strokes, so you must click a letter.  Sizes
+            in millimetres.
+  "Screen"  SoText2 -- always faces the camera, constant size however far you
+            zoom out.  Picks on the character cells rather than the outlines,
+            so the target is the text block itself.  Sizes in PIXELS.
+
+Screen mode is much the easier to click.  Its drawback is that the labels no
+longer scale with the drawing, so on a zoomed-out view of a large plan they
+crowd each other.
+------------------------------------------------------------------------
+"""
+
+import FreeCAD
+import FreeCADGui
+
+DISPLAY_MODE = "World"          # "World" or "Screen" -- see above
+SCREEN_FONT_PX = 14.0           # used only in Screen mode (pixels, not mm)
+FONT_MM = 400.0                 # World-mode fallback if the document is silent
+FONT_NAME = ""                  # e.g. "Arial Bold" -- fatter strokes are a
+                                # bigger target in World mode.  "" leaves it.
+
+COLOR = (1.0, 0.80, 0.20)               # amber -- legible on either ground
+PLACEHOLDER_COLOR = (1.0, 0.42, 0.42)   # still says "?? |", needs naming
+JUSTIFY_CENTER = True           # centre the block on its anchor point, so what
+                                # you see is what point-in-room actually tests
+
+# Global 3D-view selection tolerance, FreeCAD's default is 5.0 px.  Raising it
+# makes everything easier to click, not just these labels.  Left as None the
+# macro does not touch your preferences; set a number (12 is comfortable) to
+# apply it.  Same setting lives in Preferences -> Display -> 3D View.
+PICK_RADIUS_PX = None
+
+PLACEHOLDER_PREFIX = "??"
+
+
+def is_draft_text(obj):
+    return (hasattr(obj, "Text") and hasattr(obj, "Placement")
+            and obj.ViewObject is not None
+            and hasattr(obj.ViewObject, "FontSize"))
+
+
+def first_line(obj):
+    lines = [s.strip() for s in (obj.Text or []) if s and s.strip()]
+    return lines[0] if lines else ""
+
+
+def main():
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        FreeCAD.Console.PrintError("label_style: no active document.\n")
+        return
+
+    screen = DISPLAY_MODE == "Screen"
+    if screen:
+        size = SCREEN_FONT_PX
+    else:
+        size = float(getattr(doc, "OS_LabelFontSize_mm", 0.0) or FONT_MM)
+
+    styled = placeholders = 0
+    shown = []
+    for obj in doc.Objects:
+        if not is_draft_text(obj):
+            continue
+        vo = obj.ViewObject
+        if not vo.Visibility:
+            vo.Visibility = True
+            shown.append(obj.Name)
+        vo.DisplayMode = DISPLAY_MODE
+        vo.FontSize = size
+        if FONT_NAME:
+            vo.FontName = FONT_NAME
+        is_placeholder = first_line(obj).startswith(PLACEHOLDER_PREFIX)
+        vo.TextColor = PLACEHOLDER_COLOR if is_placeholder else COLOR
+        if JUSTIFY_CENTER and hasattr(vo, "Justification"):
+            vo.Justification = "Center"
+        styled += 1
+        placeholders += 1 if is_placeholder else 0
+
+    # A hidden group hides everything in it, so unhiding the labels alone
+    # leaves the view exactly as blank as before.
+    groups = 0
+    for obj in doc.Objects:
+        children = getattr(obj, "Group", None)
+        if not children or obj.ViewObject is None:
+            continue
+        if not any(is_draft_text(child) for child in children):
+            continue
+        if not obj.ViewObject.Visibility:
+            obj.ViewObject.Visibility = True
+            groups += 1
+
+    if PICK_RADIUS_PX:
+        FreeCAD.ParamGet("User parameter:BaseApp/Preferences/View").SetFloat(
+            "PickRadius", float(PICK_RADIUS_PX))
+        FreeCAD.Console.PrintMessage(
+            "label_style: pick radius set to %.0f px (was 5, FreeCAD's "
+            "default).\n" % PICK_RADIUS_PX)
+
+    doc.recompute()
+
+    unit = "px" if screen else "mm"
+    FreeCAD.Console.PrintMessage(
+        "label_style: %d label(s) -> %s mode at %.0f %s; %d still unnamed "
+        "(shown in red).\n" % (styled, DISPLAY_MODE, size, unit, placeholders))
+    if shown or groups:
+        FreeCAD.Console.PrintMessage(
+            "label_style: unhid %d label(s) and %d group(s) -- they were "
+            "there all along.\n" % (len(shown), groups))
+    if not styled:
+        FreeCAD.Console.PrintWarning(
+            "label_style: no Draft Text found -- is the seeded document the "
+            "active one?\n")
+
+
+main()

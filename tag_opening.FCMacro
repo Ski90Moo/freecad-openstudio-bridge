@@ -1,0 +1,496 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the FreeCAD-OpenStudio bridge contributors
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.  See LICENSE for the full text.
+
+# Pin an opening's type to the outline you drew, instead of letting the shape
+# classifier decide it.
+#
+# Run from inside FreeCAD (Macro -> Macros... -> Execute) with either:
+#
+#   * some edges selected while editing an opening sketch -- the usual way,
+#     select the rectangle and say what it is; or
+#   * an imported subsurface selected in the tree ("GlassDoor South 10") --
+#     the macro finds the outline it came from and tags that instead.
+#
+# The second is there because the honest workflow is classify-then-correct:
+# you let the classifier do the work, look at the import, and fix the two it
+# got wrong.  At that point the object in front of you is the model's
+# reflection, not your drawing, and editing its OS_SubSurfaceType does nothing
+# -- so this walks back to the sketch element and writes it there, which is
+# the input.
+#
+# The type rides on the geometry itself as a Part::GeometryStringExtension
+# named OS_SubSurfaceType.  That is document data, not view data: it survives
+# a save, a drag and a new constraint, and it follows its element when
+# something else in the sketch is deleted.  There is no limit -- one sketch can
+# hard-specify a glass door, an overhead door and an operable window at once,
+# and every outline left untagged is still classified by shape.
+#
+# Choosing "(classify by shape)" removes the tag again.
+
+import os
+import sys
+
+import FreeCAD
+import Part
+
+try:
+    import FreeCADGui
+    from PySide import QtGui
+except ImportError:  # pragma: no cover - only reachable headless
+    FreeCADGui = None
+
+EXT_NAME = "OS_SubSurfaceType"
+
+KINDS = ["FixedWindow", "OperableWindow", "Door", "GlassDoor",
+         "OverheadDoor", "Skylight"]
+CLEAR = "(classify by shape)"
+
+# Matching an imported subsurface back to the outline it came from.  These are
+# the same rectangle, but not bit-for-bit: the model's vertices go out through
+# JSON at six decimal places of a metre and come back into a sketch stored as
+# floats, which measured 0.000438 mm apart on this document.  Comparing keys
+# for equality found none of 28; a tolerance finds them all.
+MATCH_TOL_MM = 0.01
+
+
+def mid(edge):
+    return edge.valueAt((edge.FirstParameter + edge.LastParameter) / 2.0)
+
+
+def key(point):
+    return (round(point.x, 4), round(point.y, 4), round(point.z, 4))
+
+
+def tag_of(facade):
+    if not facade.hasExtensionOfName(EXT_NAME):
+        return ""
+    return (facade.getExtensionOfName(EXT_NAME).Value or "").strip()
+
+
+def set_tag(sketch, indices, kind):
+    """Write (or clear) the type on the given geometry indices."""
+    facades = sketch.GeometryFacadeList
+    for index in indices:
+        if kind:
+            extension = Part.GeometryStringExtension()
+            extension.Name = EXT_NAME
+            extension.Value = kind
+            facades[index].setExtension(extension)
+        elif facades[index].hasExtensionOfName(EXT_NAME):
+            facades[index].deleteExtensionOfName(EXT_NAME)
+    sketch.GeometryFacadeList = facades
+
+
+def edge_index(sketch):
+    """{global edge midpoint: geometry index} for the drawable geometry."""
+    lookup = {}
+    facades = sketch.GeometryFacadeList
+    for index, geometry in enumerate(sketch.Geometry):
+        if index < len(facades) and facades[index].Construction:
+            continue
+        try:
+            edge = geometry.toShape()
+        except Exception:
+            continue
+        lookup[key(sketch.Placement.multVec(mid(edge)))] = index
+    return lookup
+
+
+def selected_sketch_edges():
+    """(sketch, [geometry index]) from a selection made inside the editor."""
+    for item in FreeCADGui.Selection.getSelectionEx():
+        obj = item.Object
+        if obj.TypeId != "Sketcher::SketchObject":
+            continue
+        indices = []
+        for name in item.SubElementNames:
+            if name.startswith("Edge"):
+                indices.append(int(name[4:]) - 1)
+        if indices:
+            return obj, indices
+    return None, None
+
+
+def host_normal(doc, name):
+    """Outward normal of an imported surface, for undoing the display offset."""
+    for obj in doc.Objects:
+        if getattr(obj, "OS_SurfaceName", None) != name:
+            continue
+        faces = getattr(obj.Shape, "Faces", [])
+        if not faces:
+            return None
+        face = faces[0]
+        normal = FreeCAD.Vector(face.Surface.Axis)
+        if face.Orientation == "Reversed":
+            normal = normal.negative()
+        return normal
+    return None
+
+
+def same_points(got, want, tol):
+    """True when two vertex lists are the same points, in any order."""
+    if len(got) != len(want):
+        return False
+    left = list(want)
+    for point in got:
+        for i, other in enumerate(left):
+            if (abs(point.x - other.x) <= tol
+                    and abs(point.y - other.y) <= tol
+                    and abs(point.z - other.z) <= tol):
+                del left[i]
+                break
+        else:
+            return False
+    return True
+
+
+def flatten(points, normal):
+    """Drop the component along the wall normal.
+
+    An opening traced on a facade but hosted on a wall set back behind it was
+    projected on the way into the model, so its drawn position and its model
+    position differ by the setback.  What projection preserves is exactly the
+    elevation coordinates, so ignoring the normal direction makes the two
+    comparable again.
+    """
+    return [p - normal * p.dot(normal) for p in points]
+
+
+def opening_sketches(doc):
+    for obj in doc.Objects:
+        if obj.TypeId == "Sketcher::SketchObject" and \
+                getattr(obj, "OS_OpeningSketch", False):
+            yield obj
+
+
+def outline_of(subsurface):
+    """(sketch, [geometry index]) for the drawn outline a subsurface came from.
+
+    The importer pulls a subsurface a couple of millimetres out of its host so
+    it can be seen and clicked, and records how far on OS_DisplayOffset_mm.
+    That comes back off first, then the vertices are compared to every drawn
+    outline -- in place, and failing that flattened onto the wall plane, which
+    is what catches an opening that was projected onto a setback wall.
+    """
+    doc = subsurface.Document
+    normal = host_normal(doc, getattr(subsurface, "OS_HostSurface", ""))
+    offset = getattr(subsurface, "OS_DisplayOffset_mm", 0.0)
+    if offset and normal is None:
+        return None, None, ("its host %r is not in this document"
+                            % getattr(subsurface, "OS_HostSurface", ""))
+    shift = normal * offset if offset else FreeCAD.Vector(0, 0, 0)
+    want = [v.Point - shift for v in subsurface.Shape.Vertexes]
+
+    def search(project):
+        hits = []
+        target = flatten(want, normal) if project else want
+        for obj in opening_sketches(doc):
+            for wire in getattr(obj.Shape, "Wires", []):
+                if not wire.isClosed():
+                    continue
+                points = [v.Point for v in wire.OrderedVertexes]
+                if project:
+                    points = flatten(points, normal)
+                if same_points(points, target, MATCH_TOL_MM):
+                    hits.append((obj, wire))
+        return hits
+
+    hits = search(False)
+    if not hits and normal is not None:
+        hits = search(True)
+    if not hits:
+        return None, None, ("no drawn outline in an opening sketch matches it "
+                            "-- was it placed by hand, or by an MCP tool?")
+    if len(hits) > 1:
+        return None, None, ("%d drawn outlines match it (%s) -- too ambiguous "
+                            "to tag automatically; select the edges in the "
+                            "sketch instead"
+                            % (len(hits),
+                               ", ".join(sorted({o.Label for o, _ in hits}))))
+
+    sketch, wire = hits[0]
+    lookup = edge_index(sketch)
+    indices = [lookup.get(key(mid(edge))) for edge in wire.Edges]
+    if any(i is None for i in indices):
+        return None, None, "its outline did not join back to the sketch"
+    return sketch, indices, None
+
+
+def tally(sketch):
+    """{type: element count} for one sketch, for reporting what is tagged.
+
+    There is no UI anywhere in FreeCAD for a geometry extension -- the
+    Elements panel lists "34-Line" and has nowhere to put a tag -- so a tagged
+    outline looks exactly like an untagged one.  This is the only way to see
+    them without exporting, which is why the macro prints it every run.
+    """
+    counts = {}
+    for facade in sketch.GeometryFacadeList:
+        # Construction geometry never reaches Shape, so the exporter never
+        # sees a tag on it.  Counting one here would report a type that has
+        # no effect, which is worse than not reporting it at all.
+        if facade.Construction:
+            continue
+        kind = tag_of(facade)
+        if kind:
+            counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+def describe(counts):
+    if not counts:
+        return "nothing tagged"
+    return ", ".join("%s %d" % item for item in sorted(counts.items()))
+
+
+def conflicts(sketch):
+    """Outlines whose own edges disagree about what they are.
+
+    A tally counts elements, so a rectangle retagged on three of its four
+    edges reads as "GlassDoor 11, Door 1" -- which looks like a document with
+    one door in it, not like an outline in conflict.  That is how one survived
+    an entire session: the export refuses it, but only the export ever said
+    so, and by then you are in a terminal looking at a wire number.
+
+    Returns [(wire number, [types], width_m, height_m, x_m, z_m)] so the thing
+    can be found in the sketch it lives in.
+    """
+    lookup = {}
+    facades = sketch.GeometryFacadeList
+    for index, geometry in enumerate(sketch.Geometry):
+        if index >= len(facades) or facades[index].Construction:
+            continue
+        kind = tag_of(facades[index])
+        if not kind:
+            continue
+        try:
+            edge = geometry.toShape()
+        except Exception:                   # pragma: no cover - OCC edge case
+            continue
+        lookup[key(sketch.Placement.multVec(mid(edge)))] = kind
+
+    found = []
+    for number, wire in enumerate(sketch.Shape.Wires, start=1):
+        kinds = sorted({lookup[key(mid(edge))] for edge in wire.Edges
+                        if key(mid(edge)) in lookup})
+        if len(kinds) < 2:
+            continue
+        xs = [v.Point.x / 1000.0 for v in wire.Vertexes]
+        zs = [v.Point.z / 1000.0 for v in wire.Vertexes]
+        found.append((number, kinds, max(xs) - min(xs), max(zs) - min(zs),
+                      min(xs), min(zs)))
+    return found
+
+
+def report_conflicts(doc):
+    """Every self-contradicting outline in the document, as warning text."""
+    lines = []
+    for sketch in opening_sketches(doc):
+        for number, kinds, width, height, x, z in conflicts(sketch):
+            lines.append(
+                "  %s wire %d: %.2f x %.2f m at %.2f m along, %.2f m up "
+                "-- tagged %s"
+                % (sketch.Label, number, width, height, x, z,
+                   " and ".join(kinds)))
+    if not lines:
+        return None
+    return ("%d outline(s) disagree with themselves.  The export refuses "
+            "these:\n%s\nSelect all of the outline's edges and tag it once, "
+            "so every edge says the\nsame thing.\n"
+            % (len(lines), "\n".join(lines)))
+
+
+def report_document(doc):
+    """List every tagged outline, for when there is nothing selected."""
+    lines = []
+    for sketch in opening_sketches(doc):
+        counts = tally(sketch)
+        if counts:
+            lines.append("  %-22s %s" % (sketch.Label, describe(counts)))
+    if lines:
+        FreeCAD.Console.PrintMessage(
+            "Hard-specified types in this document (element counts; an "
+            "outline\ndrawn as a rectangle is 4 elements):\n%s\n"
+            % "\n".join(lines))
+    else:
+        FreeCAD.Console.PrintMessage(
+            "No outline in this document carries a hard-specified type -- "
+            "every\nopening is classified by its shape.\n")
+    warning = report_conflicts(doc)
+    if warning:
+        FreeCAD.Console.PrintWarning("\n" + warning)
+
+
+PENDING_PROP = "OS_PendingType"
+
+
+def load_exporter():
+    """The bridge module, for the classifier and the subsurface join."""
+    for folder in (os.path.dirname(os.path.abspath(__file__)),
+                   os.environ.get("FREECAD_BRIDGE", "")):
+        if not folder:
+            continue
+        if os.path.exists(os.path.join(folder, "fc_export_openings.py")):
+            if folder not in sys.path:
+                sys.path.insert(0, folder)
+            import fc_export_openings
+            return fc_export_openings
+    return None
+
+
+def mark_pending(doc):
+    """Show, on the model's own objects, what the next apply would change.
+
+    The real OS_* fields are left exactly as import wrote them.  They say what
+    the model holds, `verify` compares them against it, and overwriting them
+    here would put a second source of truth on the object that is meant to be
+    a reflection.  A separate OS_PendingType, plus a suffix on the Label so it
+    is visible in the tree, says what the *sketch* now specifies -- which is
+    the confirmation that a tag landed, without pretending it is applied.
+
+    Both are cleared as soon as the two agree again, so an object carrying a
+    marker always has something outstanding.
+    """
+    exporter = load_exporter()
+    if exporter is None:
+        return None, "could not find fc_export_openings.py to check against"
+    openings = exporter.classify_document(doc)[0]
+    outcomes = exporter.subsurface_outcomes(doc, openings)
+
+    changed = []
+    for obj in doc.Objects:
+        current = getattr(obj, "OS_SubSurfaceType", None)
+        if not current:
+            continue
+        opening = outcomes.get(obj)
+        name = getattr(obj, "OS_SurfaceName", obj.Label)
+        pending = opening["subsurface_type"] if opening else None
+
+        if pending and pending != current:
+            if not hasattr(obj, PENDING_PROP):
+                obj.addProperty("App::PropertyString", PENDING_PROP,
+                                "OpenStudio",
+                                "type the drawn outline now specifies -- not "
+                                "yet applied to the model")
+            setattr(obj, PENDING_PROP, pending)
+            obj.Label = "%s  [-> %s]" % (name, pending)
+            changed.append((name, current, pending, opening["name"]))
+        else:
+            if hasattr(obj, PENDING_PROP):
+                obj.removeProperty(PENDING_PROP)
+            if obj.Label != name:
+                obj.Label = name
+    return changed, None
+
+
+def ask(current):
+    choices = [CLEAR] + KINDS
+    index = choices.index(current) if current in choices else 0
+    kind, ok = QtGui.QInputDialog.getItem(
+        None, "Opening type",
+        "Type for the selected outline.\n"
+        "Everything left on \"%s\" is decided by size and sill height."
+        % CLEAR,
+        choices, index, False)
+    if not ok:
+        return None, False
+    return ("" if kind == CLEAR else kind), True
+
+
+def run():
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        FreeCAD.Console.PrintError("No active document.\n")
+        return
+    if FreeCADGui is None:
+        FreeCAD.Console.PrintError("This macro needs the FreeCAD GUI.\n")
+        return
+
+    sketch, indices = selected_sketch_edges()
+    via = "the selected edges"
+
+    if sketch is None:
+        picked = [o for o in FreeCADGui.Selection.getSelection()
+                  if getattr(o, "OS_SubSurfaceType", None)]
+        if len(picked) > 1:
+            FreeCAD.Console.PrintError(
+                "Select one opening at a time -- %d are selected.\n"
+                % len(picked))
+            return
+        if picked:
+            sketch, indices, why = outline_of(picked[0])
+            if sketch is None:
+                FreeCAD.Console.PrintError("%s: %s\n" % (picked[0].Label, why))
+                return
+            via = "%s -> %s" % (picked[0].Label, sketch.Label)
+
+    if sketch is None:
+        # Not an error: with nothing to act on, say what is already tagged.
+        # That is the only way to see these, so it is worth a run of its own.
+        report_document(doc)
+        FreeCAD.Console.PrintMessage(
+            "\nTo change one: select an imported subsurface in the tree, or "
+            "the edges\nof one outline while editing an opening sketch, then "
+            "run this again.\n")
+        return
+
+    facades = sketch.GeometryFacadeList
+    current = {tag_of(facades[i]) for i in indices if i < len(facades)}
+    before = tally(sketch)
+    kind, ok = ask(current.pop() if len(current) == 1 else "")
+    if not ok:
+        return
+
+    set_tag(sketch, indices, kind)
+    doc.recompute()
+    after = tally(sketch)
+
+    what = ("Tagged %d element(s) as %s" % (len(indices), kind) if kind
+            else "Cleared the type on %d element(s)" % len(indices))
+    lines = ["%s, via %s." % (what, via),
+             "  %-22s was  %s" % (sketch.Label, describe(before)),
+             "  %-22s now  %s" % ("", describe(after))]
+
+    changed, why = mark_pending(doc)
+    if why:
+        lines.append("  (%s)" % why)
+    elif changed:
+        lines.append("")
+        lines.append("Pending on the model's own objects -- OS_PendingType is "
+                     "set and the tree")
+        lines.append("label carries the new type.  The real OS_ fields still "
+                     "say what the model")
+        lines.append("holds, because that is what they are for:")
+        for name, current, pending, becomes in changed:
+            lines.append("  %-24s %-14s -> %-14s becomes %s"
+                         % (name, current, pending, becomes))
+    else:
+        lines.append("")
+        lines.append("Nothing pending: every opening now matches what the "
+                     "model already holds.")
+
+    lines.append("")
+    lines.append("Nothing is saved yet -- Ctrl+S.  The model is only changed "
+                 "when the export")
+    lines.append("and apply are run over the saved file.")
+    FreeCAD.Console.PrintMessage("\n".join(lines) + "\n")
+
+    if before == after:
+        FreeCAD.Console.PrintWarning(
+            "That did not change anything -- the selected element(s) already "
+            "read that way.\n")
+
+    # Said after every tag, not only when nothing was selected: the way to
+    # leave an outline in conflict is to tag three of its four edges, and
+    # that is a successful-looking run.
+    warning = report_conflicts(doc)
+    if warning:
+        FreeCAD.Console.PrintWarning("\n" + warning)
+
+
+run()

@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the FreeCAD-OpenStudio bridge contributors
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.  See LICENSE for the full text.
+
+# Toggle a bridge document between tracing and model display.
+#
+# Run from inside FreeCAD (Macro -> Macros... -> Execute).  It is a macro and
+# not part of the bridge scripts because headless FreeCAD builds no
+# ViewObjects at all, so nothing visual can be set from a scripted run.
+#
+# Why it exists
+# -------------
+# An imported OpenStudio surface is an opaque face, and the reference images
+# share planes with it:
+#
+#   FirstFP   z = 0        28 floor faces at z = 0        exactly coplanar
+#   SecondFP  z = 3378.2   49 slab faces at z = 3380.0    slab is in front
+#   elevations              1 mm behind their wall face
+#
+# A transparent object is drawn in a second pass with depth writes off, so it
+# cannot win a depth test it is already losing.  That is why turning an image
+# down to 70% transparency makes it disappear outright once the geometry is in
+# the document, while leaving it opaque gets it back only by z-fighting.  No
+# transparency setting fixes it; the faces in the way have to be hidden.
+#
+# Hiding them costs nothing.  Each opening sketch already carries its wall's
+# edges as external geometry, so the outline you are tracing against is in the
+# sketch itself, not in the face.
+#
+# This macro touches Visibility only.  Colours and transparency stay
+# colorize.FCMacro's business, so the two can be run in either order.
+
+import FreeCAD
+
+try:
+    import FreeCADGui
+except ImportError:  # pragma: no cover - only reachable headless
+    FreeCADGui = None
+
+
+def is_surface(obj):
+    return bool(getattr(obj, "OS_SurfaceName", None))
+
+
+def is_reference(obj):
+    return bool(getattr(obj, "OS_ElevationImage", False)) or \
+        bool(getattr(obj, "OS_OpeningSketch", False)) or \
+        obj.TypeId == "Image::ImagePlane"
+
+
+def run():
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        FreeCAD.Console.PrintError("No active document.\n")
+        return
+
+    surfaces = [o for o in doc.Objects
+                if is_surface(o) and getattr(o, "ViewObject", None)]
+    if not surfaces:
+        FreeCAD.Console.PrintError(
+            "No imported OpenStudio surfaces in this document.  Run\n"
+            "  .\\bridge.ps1 import <surfaces.json> --into <this>.FCStd\n"
+            "first.\n")
+        return
+
+    hidden = sum(1 for o in surfaces if not o.ViewObject.Visibility)
+    tracing = hidden < len(surfaces) / 2.0
+
+    for obj in surfaces:
+        obj.ViewObject.Visibility = not tracing
+
+    shown = 0
+    for obj in doc.Objects:
+        view = getattr(obj, "ViewObject", None)
+        if view is None or not is_reference(obj):
+            continue
+        if obj.TypeId == "Image::ImagePlane":
+            # One-side lighting leaves the drawing unlit from behind, which
+            # reads as a black rectangle when you orbit through the building.
+            try:
+                view.Lighting = "Two side"
+            except (AttributeError, ValueError):
+                pass
+        if tracing and not view.Visibility:
+            view.Visibility = True
+            shown += 1
+
+    doc.recompute()
+    if FreeCADGui is not None:
+        FreeCADGui.updateGui()
+
+    if tracing:
+        FreeCAD.Console.PrintMessage(
+            "Tracing: %d surface(s) hidden, %d reference object(s) shown.\n"
+            "The wall outlines are still there as the sketches' external\n"
+            "geometry.  Run this macro again to put the model back.\n"
+            % (len(surfaces), shown))
+    else:
+        FreeCAD.Console.PrintMessage(
+            "Model: %d surface(s) shown.  The images are behind them again.\n"
+            % len(surfaces))
+
+
+run()

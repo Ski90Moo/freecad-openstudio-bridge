@@ -1,0 +1,13 @@
+# The bridge venv.  Only the model side needs these; the fc_*.py scripts run
+# under FreeCAD's own bundled interpreter and import FreeCAD, Part, Draft,
+# Sketcher and BOPTools from there.  Those are not installable with pip and
+# must not be added here.
+#
+#   python -m venv osvenv
+#   osvenv/Scripts/pip install -r requirements.txt
+
+openstudio==3.11.0
+
+# Only to check schema/*.json against a real exported plan.  A schema nothing
+# validates against is decoration.
+jsonschema

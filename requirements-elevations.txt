@@ -1,0 +1,11 @@
+# Extras for elevations/ only -- reading windows and doors out of a PDF
+# drawing set.  The core bridge does not need any of these.
+#
+#   osvenv/Scripts/pip install -r requirements-elevations.txt
+
+-r requirements.txt
+
+numpy
+Pillow
+pypdf
+pypdfium2

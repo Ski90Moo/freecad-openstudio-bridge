@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/freecad-bridge/surfaces.schema.json",
+  "title": "OpenStudio surface geometry dump",
+  "description": "Output of dump_osm_geometry.py, input to fc_import_surfaces.py and verify_roundtrip.py. Machine-generated; not intended for hand editing. This is the vertex read-back openstudio-mcp does not provide -- get_surface_details reports only the vertex count.",
+  "type": "object",
+  "required": ["schema_version", "units", "surfaces"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "source_model": {"type": "string"},
+    "generated_utc": {"type": "string", "format": "date-time"},
+    "units": {"const": "meters"},
+    "north_axis_deg": {"type": "number"},
+    "surfaces": {"type": "array", "items": {"$ref": "#/$defs/surface"}},
+    "subsurfaces": {"type": "array", "items": {"$ref": "#/$defs/subsurface"}}
+  },
+  "$defs": {
+    "loop": {
+      "type": "array",
+      "minItems": 3,
+      "description": "Vertex loop in BUILDING coordinates -- the space transformation has already been applied, so these can be drawn directly.",
+      "items": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": {"type": "number"}
+      }
+    },
+    "surface": {
+      "type": "object",
+      "required": ["name", "handle", "space", "surface_type", "vertices"],
+      "properties": {
+        "name": {"type": "string"},
+        "handle": {
+          "type": "string",
+          "description": "OpenStudio handle. Regenerated on every rebuild, so useful within one dump only -- never as a durable id."
+        },
+        "space": {"type": "string"},
+        "story": {"type": ["string", "null"]},
+        "thermal_zone": {"type": ["string", "null"]},
+        "surface_type": {"enum": ["Wall", "Floor", "RoofCeiling"]},
+        "outside_boundary_condition": {"type": "string"},
+        "sun_exposure": {"type": "string"},
+        "wind_exposure": {"type": "string"},
+        "construction": {"type": ["string", "null"]},
+        "adjacent_surface": {"type": ["string", "null"]},
+        "gross_area_m2": {"type": "number"},
+        "net_area_m2": {"type": "number"},
+        "azimuth_deg": {"type": "number"},
+        "tilt_deg": {"type": "number"},
+        "outward_normal": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"type": "number"}
+        },
+        "vertices": {"$ref": "#/$defs/loop"}
+      }
+    },
+    "subsurface": {
+      "type": "object",
+      "required": ["name", "host_surface", "subsurface_type", "vertices"],
+      "properties": {
+        "name": {"type": "string"},
+        "handle": {"type": "string"},
+        "host_surface": {"type": "string"},
+        "space": {"type": "string"},
+        "subsurface_type": {
+          "enum": ["FixedWindow", "OperableWindow", "GlassDoor", "Door",
+                   "OverheadDoor", "Skylight", "TubularDaylightDome",
+                   "TubularDaylightDiffuser"]
+        },
+        "construction": {"type": ["string", "null"]},
+        "gross_area_m2": {"type": "number"},
+        "vertices": {"$ref": "#/$defs/loop"}
+      }
+    }
+  }
+}

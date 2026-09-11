@@ -1,0 +1,49 @@
+# The bridge venv.  ~300 MB, and recreated by two lines in the README.
+osvenv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Drawing sets.  Some carry title blocks and client identification; the
+# bridge reads them as inputs you supply, and none belong in the repo.
+*.pdf
+
+# FreeCAD documents and their backups.  These are the user's drawing, not
+# source -- the repo describes how to build one, it does not ship one.
+*.FCStd
+*.FCStd1
+*.FCBak
+
+# OpenStudio models and their run directories.
+*.osm
+*.osm.bak
+*.idf
+runs/
+
+# Working exchange files at the repo root.  Every round trip rewrites these,
+# so a committed copy is stale by definition.  Deliberate examples live in
+# samples/ and are committed there.
+/surfaces.json
+/openings.json
+/plan.json
+/shading.json
+/*.fcmap.json
+/elevations/openings.json
+/elevations/openings_3d.json
+/elevations/page3_images_only.pdf
+
+# Timestamped backups written beside an edited document.
+*.bak-*
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store

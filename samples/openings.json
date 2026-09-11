@@ -1,0 +1,512 @@
+{
+  "schema_version": 1,
+  "source_document": "FloorplanTest-02.FCStd",
+  "generated_utc": "2026-09-10T20:16:12+00:00",
+  "units": "meters",
+  "openings": [
+    {
+      "name": "Door North 01",
+      "id": "ac80de24-7449-432e-8766-6d5fc53355ff",
+      "subsurface_type": "Door",
+      "host_surface": "Surface 165",
+      "host_space": "027-403-Warehouse",
+      "source_object": "OS_Elev_North",
+      "width_m": 1.0226,
+      "height_m": 2.1734,
+      "sill_above_floor_m": -0.0,
+      "projected_m": 0.0,
+      "vertices": [
+        [46.509086, 18.286096, 2.173356],
+        [46.509086, 18.286096, -0.0],
+        [45.486492, 18.286096, -0.0],
+        [45.486492, 18.286096, 2.173356]
+      ]
+    },
+    {
+      "name": "FixedWindow North 02",
+      "id": "29b192bd-2a09-4792-82a2-dd3c62777dd2",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 165",
+      "host_space": "027-403-Warehouse",
+      "source_object": "OS_Elev_North",
+      "width_m": 1.7803,
+      "height_m": 0.5444,
+      "sill_above_floor_m": 4.9285,
+      "projected_m": 0.0,
+      "vertices": [
+        [46.893934, 18.286096, 5.472934],
+        [46.893934, 18.286096, 4.928531],
+        [45.11359, 18.286096, 4.928531],
+        [45.11359, 18.286096, 5.472934]
+      ]
+    },
+    {
+      "name": "FixedWindow North 03",
+      "id": "26261a11-5a50-44e4-9b19-17af152e3b80",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 147",
+      "host_space": "024-303-Warehouse",
+      "source_object": "OS_Elev_North",
+      "width_m": 1.774,
+      "height_m": 0.5537,
+      "sill_above_floor_m": 4.9241,
+      "projected_m": 0.0,
+      "vertices": [
+        [38.357949, 18.286096, 5.477804],
+        [38.357949, 18.286096, 4.924146],
+        [36.58391, 18.286096, 4.924146],
+        [36.58391, 18.286096, 5.477804]
+      ]
+    },
+    {
+      "name": "Door North 04",
+      "id": "ca465e01-0b2e-4a2b-aab2-787b2cb6738c",
+      "subsurface_type": "Door",
+      "host_surface": "Surface 147",
+      "host_space": "024-303-Warehouse",
+      "source_object": "OS_Elev_North",
+      "width_m": 1.0192,
+      "height_m": 2.177,
+      "sill_above_floor_m": -0.0,
+      "projected_m": 0.0,
+      "vertices": [
+        [37.976078, 18.286096, 2.176992],
+        [37.976078, 18.286096, -0.0],
+        [36.956844, 18.286096, -0.0],
+        [36.956844, 18.286096, 2.176992]
+      ]
+    },
+    {
+      "name": "FixedWindow North 05",
+      "id": "ae62d2e8-0c40-42e9-ba90-d444ecacf08d",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 59",
+      "host_space": "020-204-Shop",
+      "source_object": "OS_Elev_North",
+      "width_m": 1.7646,
+      "height_m": 0.5473,
+      "sill_above_floor_m": 4.9287,
+      "projected_m": 0.0,
+      "vertices": [
+        [29.858174, 18.286096, 5.47595],
+        [29.858174, 18.286096, 4.928678],
+        [28.093586, 18.286096, 4.928678],
+        [28.093586, 18.286096, 5.47595]
+      ]
+    },
+    {
+      "name": "FixedWindow North 06",
+      "id": "4abd6d47-f46f-4573-b76f-a52a54411b3c",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 59",
+      "host_space": "020-204-Shop",
+      "source_object": "OS_Elev_North",
+      "width_m": 1.7809,
+      "height_m": 0.5541,
+      "sill_above_floor_m": 4.9231,
+      "projected_m": 0.0,
+      "vertices": [
+        [21.411865, 18.286096, 5.477227],
+        [21.411865, 18.286096, 4.923089],
+        [19.630996, 18.286096, 4.923089],
+        [19.630996, 18.286096, 5.477227]
+      ]
+    },
+    {
+      "name": "Door North 07",
+      "id": "da687aa6-34ea-4808-9844-e634cd5dd04b",
+      "subsurface_type": "Door",
+      "host_surface": "Surface 59",
+      "host_space": "020-204-Shop",
+      "source_object": "OS_Elev_North",
+      "width_m": 1.0058,
+      "height_m": 2.1782,
+      "sill_above_floor_m": -0.0,
+      "projected_m": 0.0,
+      "vertices": [
+        [21.03284, 18.286096, 2.178212],
+        [21.03284, 18.286096, -0.0],
+        [20.027059, 18.286096, -0.0],
+        [20.027059, 18.286096, 2.178212]
+      ]
+    },
+    {
+      "name": "FixedWindow South 01",
+      "id": "ebfc03be-5c47-4ae9-a6dc-81025ca4c654",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 35",
+      "host_space": "006-102-Office",
+      "source_object": "OS_Elev_South",
+      "width_m": 1.7802,
+      "height_m": 1.1638,
+      "sill_above_floor_m": 0.9355,
+      "projected_m": 0.0,
+      "vertices": [
+        [1.347887, 0.0, 2.099275],
+        [1.347887, 0.0, 0.935464],
+        [3.128124, 0.0, 0.935464],
+        [3.128124, 0.0, 2.099275]
+      ]
+    },
+    {
+      "name": "FixedWindow South 02",
+      "id": "330eb57b-6b6f-4ff5-82f1-a1c39ccb640c",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 181",
+      "host_space": "029-113-Open Work Space Mezzanine",
+      "source_object": "OS_Elev_South",
+      "width_m": 1.7687,
+      "height_m": 1.1655,
+      "sill_above_floor_m": 0.9306,
+      "projected_m": 0.0,
+      "vertices": [
+        [1.35504, 0.0, 5.476087],
+        [1.35504, 0.0, 4.310631],
+        [3.123771, 0.0, 4.310631],
+        [3.123771, 0.0, 5.476087]
+      ]
+    },
+    {
+      "name": "GlassDoor South 03",
+      "id": "6da54a77-62fb-4c71-900e-9c3e8cc34c14",
+      "subsurface_type": "GlassDoor",
+      "host_surface": "Surface 204",
+      "host_space": "001-101-Lobby Reception",
+      "source_object": "OS_Elev_South",
+      "width_m": 4.3497,
+      "height_m": 2.7286,
+      "sill_above_floor_m": 0.0,
+      "projected_m": 0.0,
+      "vertices": [
+        [6.044045, 0.0, 2.728616],
+        [6.044045, 0.0, 0.0],
+        [10.393795, 0.0, 0.0],
+        [10.393795, 0.0, 2.728616]
+      ]
+    },
+    {
+      "name": "FixedWindow South 04",
+      "id": "8d5c1143-e4c5-415a-aeb5-14fc118ab4d4",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 204",
+      "host_space": "001-101-Lobby Reception",
+      "source_object": "OS_Elev_South",
+      "width_m": 1.7797,
+      "height_m": 1.1638,
+      "sill_above_floor_m": 4.3148,
+      "projected_m": 0.0,
+      "vertices": [
+        [13.381508, 0.0, 5.478618],
+        [13.381508, 0.0, 4.314843],
+        [15.161186, 0.0, 4.314843],
+        [15.161186, 0.0, 5.478618]
+      ]
+    },
+    {
+      "name": "FixedWindow South 05",
+      "id": "8fb9d124-94cd-401f-b495-084724b7a46c",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 204",
+      "host_space": "001-101-Lobby Reception",
+      "source_object": "OS_Elev_South",
+      "width_m": 1.7769,
+      "height_m": 1.1565,
+      "sill_above_floor_m": 0.9331,
+      "projected_m": 0.0,
+      "vertices": [
+        [13.38297, 0.0, 2.089564],
+        [13.38297, 0.0, 0.933103],
+        [15.159824, 0.0, 0.933103],
+        [15.159824, 0.0, 2.089564]
+      ]
+    },
+    {
+      "name": "GlassDoor South 06",
+      "id": "74c8b6a5-878e-4a38-8ea5-5ca3ceb2d030",
+      "subsurface_type": "GlassDoor",
+      "host_surface": "Surface 114",
+      "host_space": "017-201-Office",
+      "source_object": "OS_Elev_South",
+      "width_m": 1.6858,
+      "height_m": 2.7267,
+      "sill_above_floor_m": 0.0,
+      "projected_m": 0.0,
+      "vertices": [
+        [18.073771, 0.0, 2.72673],
+        [18.073771, 0.0, 0.0],
+        [19.759615, 0.0, 0.0],
+        [19.759615, 0.0, 2.72673]
+      ]
+    },
+    {
+      "name": "OverheadDoor South 07",
+      "id": "1a62cf13-7e0c-42ff-8236-9a413894b97c",
+      "subsurface_type": "OverheadDoor",
+      "host_surface": "Surface 63",
+      "host_space": "020-204-Shop",
+      "source_object": "OS_Elev_South",
+      "width_m": 3.6354,
+      "height_m": 4.245,
+      "sill_above_floor_m": 0.0,
+      "projected_m": 0.0,
+      "vertices": [
+        [22.258752, 0.0, 4.244975],
+        [22.258752, 0.0, 0.0],
+        [25.894127, 0.0, 0.0],
+        [25.894127, 0.0, 4.244975]
+      ]
+    },
+    {
+      "name": "OverheadDoor South 08",
+      "id": "5f18561b-d112-4883-8b63-92d41153caab",
+      "subsurface_type": "OverheadDoor",
+      "host_surface": "Surface 63",
+      "host_space": "020-204-Shop",
+      "source_object": "OS_Elev_South",
+      "width_m": 3.6544,
+      "height_m": 4.2355,
+      "sill_above_floor_m": 0.0,
+      "projected_m": 0.0,
+      "vertices": [
+        [28.7904, 0.0, 4.23545],
+        [28.7904, 0.0, 0.0],
+        [32.444825, 0.0, 0.0],
+        [32.444825, 0.0, 4.23545]
+      ]
+    },
+    {
+      "name": "OverheadDoor South 09",
+      "id": "5e4c929d-4219-4960-ae25-ba9ac39c7de7",
+      "subsurface_type": "OverheadDoor",
+      "host_surface": "Surface 145",
+      "host_space": "024-303-Warehouse",
+      "source_object": "OS_Elev_South",
+      "width_m": 3.6576,
+      "height_m": 4.2469,
+      "sill_above_floor_m": 0.0,
+      "projected_m": 0.0,
+      "vertices": [
+        [33.918234, 0.0, 4.246912],
+        [33.918234, 0.0, 0.0],
+        [37.575834, 0.0, 0.0],
+        [37.575834, 0.0, 4.246912]
+      ]
+    },
+    {
+      "name": "GlassDoor South 10",
+      "id": "54524eca-d5b7-42ca-963d-3f4cf0fe8cdd",
+      "subsurface_type": "GlassDoor",
+      "host_surface": "Surface 133",
+      "host_space": "022-301-Office",
+      "source_object": "OS_Elev_South",
+      "width_m": 1.6917,
+      "height_m": 2.7287,
+      "sill_above_floor_m": 0.0,
+      "projected_m": 0.0,
+      "vertices": [
+        [38.483352, 0.0, 2.728708],
+        [38.483352, 0.0, 0.0],
+        [40.175004, 0.0, 0.0],
+        [40.175004, 0.0, 2.728708]
+      ]
+    },
+    {
+      "name": "GlassDoor South 11",
+      "id": "a81aea90-5432-48b4-a70a-9deb1ef15050",
+      "subsurface_type": "GlassDoor",
+      "host_surface": "Surface 155",
+      "host_space": "025-401-Office",
+      "source_object": "OS_Elev_South",
+      "width_m": 1.6667,
+      "height_m": 2.724,
+      "sill_above_floor_m": 0.0,
+      "projected_m": 0.0,
+      "vertices": [
+        [43.52332, 0.0, 2.724042],
+        [43.52332, 0.0, 0.0],
+        [45.190008, 0.0, 0.0],
+        [45.190008, 0.0, 2.724042]
+      ]
+    },
+    {
+      "name": "OverheadDoor South 12",
+      "id": "b90ede4b-4870-4fb0-8933-12b9128402e2",
+      "subsurface_type": "OverheadDoor",
+      "host_surface": "Surface 174",
+      "host_space": "027-403-Warehouse",
+      "source_object": "OS_Elev_South",
+      "width_m": 3.6449,
+      "height_m": 4.2498,
+      "sill_above_floor_m": 0.0,
+      "projected_m": 0.0,
+      "vertices": [
+        [46.117578, 0.0, 4.249774],
+        [46.117578, 0.0, 0.0],
+        [49.762527, 0.0, 0.0],
+        [49.762527, 0.0, 4.249774]
+      ]
+    },
+    {
+      "name": "Door South 13",
+      "id": "5e9ed336-a1b6-4e02-9c8c-7c2b9ff55311",
+      "subsurface_type": "Door",
+      "host_surface": "Surface 316",
+      "host_space": "037-501-Mechanical Room",
+      "source_object": "OS_Elev_South",
+      "width_m": 1.0244,
+      "height_m": 2.1694,
+      "sill_above_floor_m": -0.0,
+      "projected_m": 0.9015,
+      "vertices": [
+        [50.94475, 0.901477, 2.169375],
+        [50.94475, 0.901477, -0.0],
+        [51.969109, 0.901477, -0.0],
+        [51.969109, 0.901477, 2.169375]
+      ]
+    },
+    {
+      "name": "FixedWindow West 01",
+      "id": "8aff693f-b5a0-427a-b7fa-0875d76f34c4",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 100",
+      "host_space": "009-105-Office",
+      "source_object": "OS_Elev_West",
+      "width_m": 1.7865,
+      "height_m": 1.1645,
+      "sill_above_floor_m": 0.9334,
+      "projected_m": 0.0,
+      "vertices": [
+        [0.0, 16.733322, 2.09796],
+        [0.0, 16.733322, 0.933444],
+        [0.0, 14.94684, 0.933444],
+        [0.0, 14.94684, 2.09796]
+      ]
+    },
+    {
+      "name": "Door West 02",
+      "id": "9fef69c1-c0e1-4db5-bde8-f6faa56e9a19",
+      "subsurface_type": "Door",
+      "host_surface": "Surface 24",
+      "host_space": "003-101b-Hallway 6",
+      "source_object": "OS_Elev_West",
+      "width_m": 1.0275,
+      "height_m": 2.1766,
+      "sill_above_floor_m": 0.0,
+      "projected_m": 0.0,
+      "vertices": [
+        [0.0, 13.559932, 2.176649],
+        [0.0, 13.559932, 0.0],
+        [0.0, 12.532434, 0.0],
+        [0.0, 12.532434, 2.176649]
+      ]
+    },
+    {
+      "name": "FixedWindow West 03",
+      "id": "5d9a9251-0c4b-4329-b79a-d229a4964b6e",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 48",
+      "host_space": "008-104-Office",
+      "source_object": "OS_Elev_West",
+      "width_m": 1.779,
+      "height_m": 1.1684,
+      "sill_above_floor_m": 0.9318,
+      "projected_m": 0.0,
+      "vertices": [
+        [0.0, 11.241525, 2.100211],
+        [0.0, 11.241525, 0.931821],
+        [0.0, 9.462525, 0.931821],
+        [0.0, 9.462525, 2.100211]
+      ]
+    },
+    {
+      "name": "FixedWindow West 04",
+      "id": "ee85e7de-9619-4fab-bff7-69c55ede5a3e",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 42",
+      "host_space": "007-103-Office",
+      "source_object": "OS_Elev_West",
+      "width_m": 1.7745,
+      "height_m": 1.1681,
+      "sill_above_floor_m": 0.9274,
+      "projected_m": 0.0,
+      "vertices": [
+        [0.0, 7.588521, 2.095492],
+        [0.0, 7.588521, 0.927407],
+        [0.0, 5.81406, 0.927407],
+        [0.0, 5.81406, 2.095492]
+      ]
+    },
+    {
+      "name": "FixedWindow West 05",
+      "id": "fad9f198-9097-4680-8894-1d7db8d37917",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 36",
+      "host_space": "006-102-Office",
+      "source_object": "OS_Elev_West",
+      "width_m": 1.771,
+      "height_m": 1.1547,
+      "sill_above_floor_m": 0.941,
+      "projected_m": 0.0,
+      "vertices": [
+        [0.0, 3.321103, 2.095769],
+        [0.0, 3.321103, 0.941035],
+        [0.0, 1.550102, 0.941035],
+        [0.0, 1.550102, 2.095769]
+      ]
+    },
+    {
+      "name": "FixedWindow West 06",
+      "id": "d914de6c-6f13-4d3e-bc38-82c8ebedd4db",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 122",
+      "host_space": "029-113-Open Work Space Mezzanine",
+      "source_object": "OS_Elev_West",
+      "width_m": 1.7694,
+      "height_m": 1.1608,
+      "sill_above_floor_m": 0.9339,
+      "projected_m": 0.0,
+      "vertices": [
+        [0.0, 3.321876, 5.474732],
+        [0.0, 3.321876, 4.313898],
+        [0.0, 1.552497, 4.313898],
+        [0.0, 1.552497, 5.474732]
+      ]
+    },
+    {
+      "name": "FixedWindow West 07",
+      "id": "9550c0a2-6c67-40dd-8b75-fadf6b9bbd18",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 122",
+      "host_space": "029-113-Open Work Space Mezzanine",
+      "source_object": "OS_Elev_West",
+      "width_m": 1.7754,
+      "height_m": 1.1725,
+      "sill_above_floor_m": 0.9284,
+      "projected_m": 0.0,
+      "vertices": [
+        [0.0, 7.587579, 5.480908],
+        [0.0, 7.587579, 4.308358],
+        [0.0, 5.812162, 4.308358],
+        [0.0, 5.812162, 5.480908]
+      ]
+    },
+    {
+      "name": "FixedWindow West 08",
+      "id": "b1c0a235-0393-4819-9ed1-007a747c7ea4",
+      "subsurface_type": "FixedWindow",
+      "host_surface": "Surface 122",
+      "host_space": "029-113-Open Work Space Mezzanine",
+      "source_object": "OS_Elev_West",
+      "width_m": 1.7831,
+      "height_m": 1.169,
+      "sill_above_floor_m": 0.9331,
+      "projected_m": 0.0,
+      "vertices": [
+        [0.0, 11.242788, 5.482068],
+        [0.0, 11.242788, 4.313062],
+        [0.0, 9.459699, 4.313062],
+        [0.0, 9.459699, 5.482068]
+      ]
+    }
+  ]
+}

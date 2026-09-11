@@ -1,0 +1,273 @@
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the FreeCAD-OpenStudio bridge contributors
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.  See LICENSE for the full text.
+
+"""Re-seat room labels after the walls moved, on the open document.
+
+Run from the GUI: Macro -> Macros... -> Execute, with the plan open.
+
+fc_relabel.py is the same job from the command line, and remains the one to
+use in a scripted round trip.  Pointing FreeCAD's macro runner at that file
+directly does not work and cannot be made to: a macro is executed with
+FreeCAD's own argv, so argparse sees no file name and stops with
+
+    freecad.exe: error: the following arguments are required: fcstd
+
+This macro is the GUI half.  It differs from the CLI in three ways, all of
+them consequences of there already being a document open:
+
+  * it works on the OPEN document rather than the file on disk, so a label
+    you just dragged counts, and an unsaved edit is not silently clobbered;
+  * it moves the labels inside a single undo transaction -- Ctrl+Z puts every
+    one of them back -- and it does not save, so nothing is committed to disk
+    until you decide it looks right;
+  * it finds the previous room areas by itself, by reading the records left
+    by earlier builds and exports (see run_dirs) and taking whichever one
+    knows the most of this document's labels.  That is the --previous
+    argument you would otherwise have to remember the path of.
+
+The matching itself is fc_relabel's, imported rather than copied.  A preview
+that could disagree with the thing it previews would be worse than none.
+"""
+
+import glob
+import os
+import sys
+
+import FreeCAD
+
+# --------------------------------------------------------------------------
+APPLY = True        # False reports what it would do and changes nothing
+RECENTRE = False    # True also re-seats labels that are already in the right
+                    # room, discarding wherever you had placed them
+PREVIOUS = ""       # a specific .fcmap.json or floorplan JSON; "" searches
+# --------------------------------------------------------------------------
+
+# Where to look if this macro has been copied out of the bridge folder.  Set
+# the FREECAD_BRIDGE environment variable to the checkout, or just point
+# FreeCAD's User Macros Location at it and this is never needed.
+FALLBACK_DIR = os.environ.get("FREECAD_BRIDGE", "")
+
+
+def say(text):
+    FreeCAD.Console.PrintMessage(text + "\n")
+
+
+def warn(text):
+    FreeCAD.Console.PrintWarning(text + "\n")
+
+
+def bridge_dir():
+    """Where the bridge scripts live -- beside this macro, or the usual place.
+
+    Looked up rather than hardcoded so a macro copied into FreeCAD's own macro
+    folder still finds them.
+    """
+    here = globals().get("__file__")
+    folders = []
+    if here:
+        folders.append(os.path.dirname(os.path.abspath(here)))
+    if FALLBACK_DIR:
+        folders.append(FALLBACK_DIR)
+    for folder in folders:
+        if os.path.exists(os.path.join(folder, "fc_relabel.py")):
+            return folder
+    return None
+
+
+def load_bridge(folder):
+    """(fc_relabel, fcbridge), reloaded so an edit to either takes effect.
+
+    FreeCAD keeps imported modules for the life of the session, so without
+    this a fix to the matching would not show up until you restarted.
+    fcbridge goes first: reloading it afterwards would leave fc_relabel
+    holding the old module object.
+    """
+    if folder not in sys.path:
+        sys.path.insert(0, folder)
+    import importlib
+    import fcbridge
+    import fc_relabel
+    importlib.reload(fcbridge)
+    importlib.reload(fc_relabel)
+    return fc_relabel, fcbridge
+
+
+def run_dirs():
+    """Where built models and exported plans might be, best guess first.
+
+    BRIDGE_RUNS is the answer if you keep them somewhere of your own.  The
+    two defaults cover the common layouts: a runs/ folder in the checkout,
+    and an MCP server's runs folder beside it.
+    """
+    folder = bridge_dir()
+    if folder is None:
+        return []
+    found = []
+    override = os.environ.get("BRIDGE_RUNS", "")
+    if override:
+        found.append(override)
+    found.append(os.path.join(folder, "runs"))
+    found.append(os.path.join(os.path.dirname(folder), "MCP", "runs"))
+    return [path for path in found if os.path.isdir(path)]
+
+
+def find_prior(relabel, wanted):
+    """(areas, path) -- the record that knows the most of these labels.
+
+    Every model built from this plan left a .fcmap.json beside its .osm, and
+    every export left a floorplan JSON, so there are usually a dozen
+    candidates and no way to tell from the file name which plan each belongs
+    to.  Space ids settle it: the right record is the one whose ids are this
+    document's ids.  Ties go to the most recent, which is the one whose areas
+    are closest to what the rooms were before the edit.
+    """
+    paths = []
+    for runs in run_dirs():
+        paths += (glob.glob(os.path.join(runs, "*.fcmap.json"))
+                  + glob.glob(os.path.join(runs, "floorplans", "*.json")))
+
+    best_hits, best_time, best = 0, 0.0, ({}, None)
+    for path in sorted(paths):
+        try:
+            prior = relabel.load_prior(path)
+        except Exception:
+            continue                      # a half-written run is not an error
+        hits = len(wanted & set(prior))
+        stamp = os.path.getmtime(path)
+        if hits > best_hits or (hits == best_hits and hits and
+                                stamp > best_time):
+            best_hits, best_time, best = hits, stamp, (prior, path)
+    return best
+
+
+def run():
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        FreeCAD.Console.PrintError("relabel: no active document.\n")
+        return
+
+    folder = bridge_dir()
+    if folder is None:
+        FreeCAD.Console.PrintError(
+            "relabel: could not find fc_relabel.py beside this macro%s.\n"
+            "Point FreeCAD's User Macros Location at the bridge folder "
+            "(Macro -> Macros... -> User macros location), or set the "
+            "FREECAD_BRIDGE environment variable to it.\n"
+            % (" or in %s" % FALLBACK_DIR if FALLBACK_DIR else ""))
+        return
+
+    relabel, fb = load_bridge(folder)
+
+    sketches = fb.story_sketches(doc)
+    if not sketches:
+        FreeCAD.Console.PrintError(
+            "relabel: no sketch has OS_Include set, so there are no stories "
+            "to work on.\n")
+        return
+    labels = fb.room_labels(doc)
+
+    wanted = set()
+    for label in labels:
+        space_id = getattr(label, fb.ID_PROP, "") or ""
+        if space_id:
+            wanted.add(space_id)
+
+    if PREVIOUS:
+        prior_by_id, source = relabel.load_prior(PREVIOUS), PREVIOUS
+    else:
+        prior_by_id, source = find_prior(relabel, wanted)
+
+    say("")
+    say("document : %s (the open one, edits and all)" % doc.Name)
+    say("labels   : %d   prior areas: %d" % (len(labels), len(prior_by_id)))
+    if source:
+        say("previous : %s (%d of %d labels known)"
+            % (os.path.basename(source), len(wanted & set(prior_by_id)),
+               len(wanted)))
+    else:
+        warn("no previous room areas found in %s, so a label that left its "
+             "room can only be placed by elimination -- set BRIDGE_RUNS if "
+             "they live somewhere else"
+             % (", ".join(run_dirs()) or "runs/ or ../MCP/runs"))
+
+    plan = []
+    total_moves = total_homeless = total_empty = 0
+    for sketch in sketches:
+        story = str(getattr(sketch, "OS_StoryName", "") or sketch.Label)
+        moves, homeless, empty, _areas = relabel.story_moves(
+            sketch, labels, sketches, prior_by_id, RECENTRE)
+        plan.append((story, sketch, moves))
+        total_moves += len(moves)
+        total_homeless += len(homeless)
+        total_empty += len(empty)
+
+        if not (moves or homeless or empty):
+            say("")
+            say("%s: every label is in a room of its own." % story)
+            continue
+
+        say("")
+        say("%s:" % story)
+        for label, face, current, wanted_pt, reason in moves:
+            here = fb.local_point(current, sketch)
+            there = fb.local_point(wanted_pt, sketch)
+            say("  move  %-24s [%8.3f, %8.3f] -> [%8.3f, %8.3f]"
+                % (relabel.label_text(label), here.x / 1000.0,
+                   here.y / 1000.0, there.x / 1000.0, there.y / 1000.0))
+            say("        %-24s %.2f m2 room; %s"
+                % ("", fb.area_m2(face), reason))
+        for label, blocker in homeless:
+            warn("  ??    %-24s could not be matched to a room"
+                 % relabel.label_text(label))
+            if blocker is not None:
+                warn("        %-24s and it is standing in the one now given "
+                     "to %s -- move or delete it"
+                     % ("", relabel.label_text(blocker)))
+        for face in empty:
+            centre = fb.centroid_m(face, sketch)
+            warn("  ??    %8.2f m2 region at [%.3f, %.3f] has no label"
+                 % (fb.area_m2(face), centre[0], centre[1]))
+
+    say("")
+    if total_homeless or total_empty:
+        warn("UNRESOLVED: %d label(s) and %d region(s) need a decision."
+             % (total_homeless, total_empty))
+        warn("  a region with no label is a room that did not exist before: "
+             "give it a Draft Text.  A label with no region is one whose "
+             "room is gone: delete it, or say where it went.")
+
+    if not total_moves:
+        say("relabel: nothing to move.")
+        return
+
+    if not APPLY:
+        say("relabel: %d label(s) would move.  Set APPLY = True at the top of "
+            "this macro to write it." % total_moves)
+        return
+
+    doc.openTransaction("Re-seat room labels")
+    written = 0
+    for _story, _sketch, moves in plan:
+        for label, _face, current, wanted_pt, _reason in moves:
+            placement = label.Placement
+            # z is left exactly as it was: which story a label belongs to is
+            # decided by which story plane it is nearest, so moving it in z
+            # could hand the label to the floor above.
+            placement.Base = fb.FreeCAD.Vector(wanted_pt.x, wanted_pt.y,
+                                               placement.Base.z)
+            label.Placement = placement
+            written += 1
+    doc.commitTransaction()
+    doc.recompute()
+
+    say("relabel: moved %d label(s).  Ctrl+Z puts them all back; nothing is "
+        "saved until you save." % written)
+
+
+run()

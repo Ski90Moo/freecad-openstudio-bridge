@@ -1,0 +1,170 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the FreeCAD-OpenStudio bridge contributors
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.  See LICENSE for the full text.
+
+# Show what every drawn opening would become, without leaving FreeCAD.
+#
+# Run from inside FreeCAD (Macro -> Macros... -> Execute) with the document
+# open.  Nothing is written and nothing is saved -- this only reads.
+#
+# It runs the export's own classifier against the open document, so the table
+# it prints in the Report view is the same one the export prints, decided by
+# the same code.  A preview that could disagree with the thing it previews
+# would be worse than none.
+#
+# Reading the OPEN document rather than the saved file is deliberate: this is
+# the review step, and you want to see the tag you just applied, before you
+# save.  The export still reads the file on disk, so save before exporting.
+#
+# The "typed by" column is the point of it:
+#
+#   shape   decided by size and sill height -- the classifier's guess
+#   tag     you pinned it, with tag_opening.FCMacro
+#   label   the whole sketch is named for a type
+#
+# Anything you disagree with, retype with tag_opening.FCMacro and run this
+# again.
+
+import os
+import sys
+
+import FreeCAD
+
+# The bridge scripts are not on FreeCAD's path.  Look beside this macro first,
+# so a copied-out macro still works, then wherever FREECAD_BRIDGE points.
+CANDIDATES = [folder for folder in (
+    os.path.dirname(os.path.abspath(__file__)),
+    os.environ.get("FREECAD_BRIDGE", ""),
+) if folder]
+
+
+def load_bridge():
+    """(exporter, differ) from wherever the bridge scripts live."""
+    for folder in CANDIDATES:
+        if os.path.exists(os.path.join(folder, "fc_export_openings.py")):
+            if folder not in sys.path:
+                sys.path.insert(0, folder)
+            import fc_export_openings
+            import opening_diff
+            return fc_export_openings, opening_diff
+    return None, None
+
+
+def run():
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        FreeCAD.Console.PrintError("No active document.\n")
+        return
+
+    exporter, opening_diff = load_bridge()
+    if exporter is None:
+        FreeCAD.Console.PrintError(
+            "Could not find fc_export_openings.py.  Looked in:\n  %s\n"
+            % "\n  ".join(CANDIDATES))
+        return
+
+    openings, rows, projected, problems, hosts, drawn = \
+        exporter.classify_document(doc)
+
+    out = ["", "%-28s %-14s %6s %6s %6s  %-11s %-24s %s"
+           % ("name", "type", "w m", "h m", "sill", "host", "space",
+              "typed by")]
+    for row in rows:
+        out.append("%-28s %-14s %6.2f %6.2f %6.2f  %-11s %-24s %s%s"
+                   % (row[0], row[1], row[2], row[3], row[4], row[5],
+                      row[6][:24], row[7], "  projected" if row[8] else ""))
+
+    by_kind = {}
+    by_source = {}
+    for opening, row in zip(openings, rows):
+        by_kind[opening["subsurface_type"]] = \
+            by_kind.get(opening["subsurface_type"], 0) + 1
+        by_source[row[7]] = by_source.get(row[7], 0) + 1
+
+    out.append("")
+    out.append("%d opening(s) from %d drawn outline(s) on %d surface(s): %s"
+               % (len(openings), len(drawn), len(hosts),
+                  ", ".join("%s %d" % kv for kv in sorted(by_kind.items()))
+                  or "none"))
+    out.append("typed by: %s"
+               % (", ".join("%s %d" % kv for kv in sorted(by_source.items()))
+                  or "nothing"))
+
+    # The full diff against the model.  Not just the type: an architectural
+    # revision moves and resizes openings as readily as it retypes them, and
+    # those are the ones to check against the architect's markup.  Read only --
+    # tag_opening.FCMacro is what writes the pending markers.
+    outcomes = exporter.subsurface_outcomes(doc, openings)
+    unmatched = [o for o in doc.Objects
+                 if getattr(o, "OS_SubSurfaceType", None)
+                 and o not in outcomes]
+
+    before, after = {}, {}
+    for obj, opening in outcomes.items():
+        key = getattr(obj, "OS_OpeningId", "") or obj.Name
+        shift = FreeCAD.Vector(0, 0, 0)
+        offset = getattr(obj, "OS_DisplayOffset_mm", 0.0)
+        if offset:
+            normal = exporter.host_normal(
+                doc, getattr(obj, "OS_HostSurface", ""))
+            if normal is not None:
+                shift = normal * offset
+        before[key] = {
+            "name": getattr(obj, "OS_SurfaceName", obj.Label),
+            "type": getattr(obj, "OS_SubSurfaceType", ""),
+            "host": getattr(obj, "OS_HostSurface", ""),
+            "vertices": [((v.Point.x - shift.x) / 1000.0,
+                          (v.Point.y - shift.y) / 1000.0,
+                          (v.Point.z - shift.z) / 1000.0)
+                         for v in obj.Shape.Vertexes]}
+        after[key] = {"name": opening["name"],
+                      "type": opening["subsurface_type"],
+                      "host": opening["host_surface"],
+                      "vertices": [tuple(v) for v in opening["vertices"]]}
+    for opening in openings:
+        if opening not in outcomes.values():
+            after.setdefault("new:" + opening["name"],
+                             {"name": opening["name"],
+                              "type": opening["subsurface_type"],
+                              "host": opening["host_surface"],
+                              "vertices": [tuple(v)
+                                           for v in opening["vertices"]]})
+    for obj in unmatched:
+        before.setdefault("gone:" + obj.Name,
+                          {"name": getattr(obj, "OS_SurfaceName", obj.Label),
+                           "type": getattr(obj, "OS_SubSurfaceType", ""),
+                           "host": getattr(obj, "OS_HostSurface", ""),
+                           "vertices": []})
+
+    out.append("")
+    out.append("Against the model as imported:")
+    out.extend("  " + line
+               for line in opening_diff.report(
+                   opening_diff.diff(before, after)))
+    if projected:
+        out.append("")
+        out.append("projected onto a wall set back from the drawing (%d) -- "
+                   "check each distance is the setback you expect:"
+                   % len(projected))
+        for name, distance, host, space in projected:
+            out.append("  %-28s %6.3f m %-8s %-11s %s"
+                       % (name, abs(distance),
+                          "back" if distance < 0 else "forward", host, space))
+
+    out.append("")
+    out.append("This is a preview of the open document -- nothing was written."
+               " Save, then")
+    out.append("run the export to apply it.")
+    FreeCAD.Console.PrintMessage("\n".join(out) + "\n")
+
+    if problems:
+        FreeCAD.Console.PrintWarning(
+            "\n%d problem(s) -- the export would refuse to write these:\n%s\n"
+            % (len(problems), "\n".join("  " + p for p in problems)))
+
+
+run()

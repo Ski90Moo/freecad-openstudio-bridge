@@ -1,0 +1,14 @@
+# Normalise line endings in the repository; check out native.
+* text=auto
+
+*.py      text diff=python
+*.FCMacro text diff=python
+*.ps1     text
+*.md      text
+*.json    text
+
+# FreeCAD documents and drawing sets are binary if one is ever committed
+# deliberately (.gitignore keeps them out by default).
+*.FCStd binary
+*.pdf   binary
+*.png   binary

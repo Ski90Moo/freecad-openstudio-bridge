@@ -1,0 +1,45 @@
+{
+ "schema_version": 1,
+ "source_pdf": "FloorplanTest-01.pdf",
+ "sheet": 3,
+ "units": "meters",
+ "px_per_ft": 37.5,
+ "images": [
+  {
+   "facade": "North",
+   "image": "Elevation-North.png",
+   "axis": "x",
+   "left_m": 53.320697,
+   "right_m": -1.217507,
+   "bottom_m": -1.217845,
+   "top_m": 9.145355
+  },
+  {
+   "facade": "South",
+   "image": "Elevation-South.png",
+   "axis": "x",
+   "left_m": -1.2192,
+   "right_m": 53.31968,
+   "bottom_m": -1.2192,
+   "top_m": 9.144
+  },
+  {
+   "facade": "West",
+   "image": "Elevation-West.png",
+   "axis": "y",
+   "left_m": 19.499707,
+   "right_m": -1.219323,
+   "bottom_m": -1.219877,
+   "top_m": 9.143323
+  },
+  {
+   "facade": "East",
+   "image": "Elevation-East.png",
+   "axis": "y",
+   "left_m": -1.2178,
+   "right_m": 19.499666,
+   "bottom_m": -1.219877,
+   "top_m": 9.143323
+  }
+ ]
+}

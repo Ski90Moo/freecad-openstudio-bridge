@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the FreeCAD-OpenStudio bridge contributors
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.  See LICENSE for the full text.
+
+# Make subsurfaces the only thing the cursor can pick.
+#
+# Run from inside FreeCAD (Macro -> Macros... -> Execute).  It is a macro and
+# not part of the bridge scripts because headless FreeCAD builds no
+# ViewProviders, so nothing visual can be set from a scripted run.
+#
+# Picking an opening out of a shaded model is unreliable for two reasons: its
+# host wall is exactly coplanar with it, so the two are the same depth from
+# most angles, and floors and roofs sit in front of everything from a normal
+# iso view.  A 2 mm display offset on the subsurface helps from outside and
+# not from inside.
+#
+# The fix is deliberately all-or-nothing.  Taking only the obstructing
+# surfaces out of the way leaves a model where some faces answer the cursor
+# and some do not, so a click that misses an opening lands on whatever
+# happened to be behind it -- an interior wall, say, which is then live to
+# drag or edit.  Being unable to predict what a click will select is worse
+# than either extreme.  So in focus mode every imported surface stops
+# answering, and only the openings do.
+#
+# Nothing is hidden and nothing is recoloured: the model stays exactly as it
+# looks, and every surface is still reachable from the tree, where selecting
+# one is deliberate rather than accidental.  Run the macro again to restore.
+#
+# Scope is the imported OpenStudio geometry only.  Opening sketches, elevation
+# images and room labels are left alone -- you need those selectable to trace.
+#
+# This macro touches Selectable only.  Visibility stays trace_mode.FCMacro's
+# business and colour stays colorize.FCMacro's, so all three compose.
+
+import FreeCAD
+
+try:
+    import FreeCADGui
+except ImportError:  # pragma: no cover - only reachable headless
+    FreeCADGui = None
+
+
+def run():
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        FreeCAD.Console.PrintError("No active document.\n")
+        return
+
+    surfaces, subsurfaces = [], []
+    for obj in doc.Objects:
+        if getattr(obj, "ViewObject", None) is None:
+            continue
+        if getattr(obj, "OS_SubSurfaceType", None):
+            subsurfaces.append(obj)
+        elif getattr(obj, "OS_SurfaceName", None):
+            surfaces.append(obj)
+
+    if not surfaces:
+        FreeCAD.Console.PrintError(
+            "No imported OpenStudio surfaces in this document.\nRun  "
+            ".\\bridge.ps1 import <surfaces.json> --into <this>.FCStd  "
+            "first.\n")
+        return
+
+    locked = sum(1 for o in surfaces if not o.ViewObject.Selectable)
+    focus = locked < len(surfaces) / 2.0
+    for obj in surfaces:
+        obj.ViewObject.Selectable = not focus
+
+    # Openings always answer the cursor -- that is the whole point, and it
+    # repairs a document where one was switched off by hand.
+    for obj in subsurfaces:
+        obj.ViewObject.Selectable = True
+
+    if FreeCADGui is not None:
+        FreeCADGui.updateGui()
+
+    if focus:
+        if not subsurfaces:
+            FreeCAD.Console.PrintMessage(
+                "Focus: %d surface(s) no longer take the cursor -- but this "
+                "document has\nno subsurfaces, so nothing is selectable in "
+                "the 3D view now.  Run again\nto restore.\n" % len(surfaces))
+            return
+        FreeCAD.Console.PrintMessage(
+            "Focus: %d opening(s) are now the only thing the cursor can "
+            "pick.\nThe %d surface(s) behind them stay visible and shaded, "
+            "and stay\nselectable from the tree.  Run again to restore.\n"
+            % (len(subsurfaces), len(surfaces)))
+    else:
+        FreeCAD.Console.PrintMessage(
+            "Restored: %d surface(s) selectable again.\n" % len(surfaces))
+
+
+run()

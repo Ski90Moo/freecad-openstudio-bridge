@@ -1,0 +1,217 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the FreeCAD-OpenStudio bridge contributors
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.  See LICENSE for the full text.
+
+# Show what the roof would do to the model, without leaving FreeCAD.
+#
+# Run from inside FreeCAD (Macro -> Macros... -> Execute) with the document
+# open.  Nothing is written and nothing is saved -- this only reads.
+#
+# It runs the exporter's own roof code against the open document, so what it
+# prints is what the export would do, decided by the same code.  A preview
+# that could disagree with the thing it previews would be worse than none.
+#
+# Two methods, set per object in the Data tab under OpenStudio:
+#
+#   OS_RoofMethod = Extend   the rooms below grow up to meet the roof.  Same
+#                            number of spaces, same floor area, more volume,
+#                            and the roof construction sits directly against
+#                            conditioned air.
+#
+#   OS_RoofMethod = Attic    the roof becomes a space of its own.  One more
+#                            space, and the ceilings below it stop being
+#                            exterior roof and become interior surfaces --
+#                            so the loss path now runs through an
+#                            unconditioned buffer.
+#
+#   OS_RoofMethod = Ignore   nothing happens.  Every candidate starts here.
+#
+# If no object has the property yet, run:
+#     .\bridge.ps1 seed ..\FloorplanTest-02.FCStd --init-roof
+# or ask Claude to.  That puts the dropdown on every solid and face in the
+# document and leaves them all at Ignore.
+
+import os
+import sys
+
+import FreeCAD
+
+CANDIDATES = [folder for folder in (
+    os.path.dirname(os.path.abspath(__file__)),
+    os.environ.get("FREECAD_BRIDGE", ""),
+) if folder]
+
+
+def load_bridge():
+    """(fcbridge, fc_roof, exporter) from wherever the bridge scripts live."""
+    for folder in CANDIDATES:
+        if os.path.exists(os.path.join(folder, "fc_roof.py")):
+            if folder not in sys.path:
+                sys.path.insert(0, folder)
+            import fc_export_floorplan
+            import fc_roof
+            import fcbridge
+            return fcbridge, fc_roof, fc_export_floorplan
+    return None, None, None
+
+
+def candidates(fcbridge, fc_roof, doc):
+    """Everything that could be a roof, and what it currently says."""
+    rows = []
+    for obj in doc.Objects:
+        if not fc_roof.has_shape(obj) or not obj.Shape.Faces:
+            continue
+        if obj.TypeId == "Sketcher::SketchObject":
+            continue
+        if getattr(obj, "OS_SurfaceName", None):
+            continue        # geometry imported back from the model
+        method = fc_roof.method_of(obj)
+        box = obj.Shape.BoundBox
+        rows.append((obj.Label, obj.TypeId.split("::")[-1],
+                     "solid" if obj.Shape.Solids else obj.Shape.ShapeType,
+                     len(obj.Shape.Faces),
+                     box.ZMin / 1000.0, box.ZMax / 1000.0,
+                     method if method is not None else "-- no property --"))
+    return rows
+
+
+def run():
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        FreeCAD.Console.PrintError("No active document.\n")
+        return
+
+    fcbridge, fc_roof, exporter = load_bridge()
+    if fc_roof is None:
+        FreeCAD.Console.PrintError(
+            "Could not find fc_roof.py.  Looked in:\n  %s\n"
+            % "\n  ".join(CANDIDATES))
+        return
+
+    out = ["", "Roof candidates in this document", "-" * 78,
+           "%-26s %-16s %-7s %5s %8s %8s  %s"
+           % ("label", "type", "shape", "faces", "z min", "z max",
+              "OS_RoofMethod")]
+    rows = candidates(fcbridge, fc_roof, doc)
+    for row in rows:
+        out.append("%-26s %-16s %-7s %5d %8.3f %8.3f  %s"
+                   % (row[0][:26], row[1], row[2], row[3], row[4], row[5],
+                      row[6]))
+    if not rows:
+        out.append("  (none -- no solids or faces outside the plan sketches)")
+
+    sketches = fcbridge.story_sketches(doc)
+    if not sketches:
+        out.append("")
+        out.append("No sketch has OS_Include set, so there is no plan to put "
+                   "a roof on.")
+        FreeCAD.Console.PrintMessage("\n".join(out) + "\n")
+        return
+
+    active = fc_roof.roof_objects(doc)
+    if not active:
+        out.append("")
+        out.append("No roof is active -- every candidate is Ignore or has no "
+                   "OS_RoofMethod,")
+        out.append("so the export gives every space a flat top, exactly as "
+                   "it does today.")
+        out.append("Set OS_RoofMethod on the one object that is the roof and "
+                   "run this again.")
+        FreeCAD.Console.PrintMessage("\n".join(out) + "\n")
+        return
+
+    # Build the stories the same way the export does, then let the roof
+    # reshape them -- in memory only.
+    labels = fcbridge.room_labels(doc)
+    stories = []
+    for sketch in sketches:
+        story = exporter.build_story(sketch, labels, sketches)[0]
+        stories.append(story)
+
+    flat_tops = {}
+    for story in stories:
+        for space in story["spaces"]:
+            flat_tops[id(space)] = fc_roof.space_top_m(space, story)
+
+    try:
+        report, attic_stories, problems, notes = fc_roof.apply(
+            doc, sketches, stories, mint=False)
+    except Exception as exc:                    # noqa: BLE001 - report it
+        FreeCAD.Console.PrintMessage("\n".join(out) + "\n")
+        FreeCAD.Console.PrintError("\nThe roof could not be read: %s\n" % exc)
+        return
+
+    out.append("")
+    out.append("Method: %s" % report.get("method", "-"))
+
+    if report.get("extended"):
+        out.append("")
+        out.append("  base %.3f m, ridge %.3f m, pitch %.2f deg"
+                   % (report["base_elevation_m"],
+                      report["ridge_elevation_m"], report["pitch_deg"]))
+        out.append("  roof area %.1f m2 over %.1f m2 of plan -- the pitch "
+                   "adds %.2f%% of surface"
+                   % (report["area_m2"], report["plan_area_m2"],
+                      (report["area_m2"] / report["plan_area_m2"] - 1.0)
+                      * 100.0 if report["plan_area_m2"] else 0.0))
+        added = sum(r["area_m2"] * (r["now_top_m"] - r["was_top_m"]) / 2.0
+                    for r in report["extended"])
+        out.append("  %d space(s) raised, roughly +%.0f m3 of volume; floor "
+                   "area and space count do not change"
+                   % (len(report["extended"]), added))
+        out.append("")
+        out.append("  %-12s %-30s %8s %8s %10s"
+                   % ("story", "space", "was", "now", "area m2"))
+        for row in sorted(report["extended"], key=lambda r: -r["area_m2"]):
+            out.append("  %-12s %-30s %8.3f %8.3f %10.1f"
+                       % (row["story"], row["space"][:30], row["was_top_m"],
+                          row["now_top_m"], row["area_m2"]))
+
+    for attic in report.get("attics", []):
+        out.append("")
+        out.append("  attic %r joins a new story %r"
+                   % (attic["space"], attic["story"]))
+        out.append("    floor  %8.3f m   %10.1f m2"
+                   % (attic["floor_elevation_m"], attic["floor_area_m2"]))
+        out.append("    ridge  %8.3f m   %10.1f m2 of roof, pitch %.2f deg"
+                   % (attic["ridge_elevation_m"], attic["area_m2"],
+                      attic["pitch_deg"]))
+        out.append("    the ceilings below become interior surfaces, so give "
+                   "the attic a")
+        out.append("    construction set and decide whether it is "
+                   "conditioned")
+
+    untouched = [(story["name"], space["name"], flat_tops[id(space)])
+                 for story in stories for space in story["spaces"]
+                 if not space.get("solid")
+                 and abs(flat_tops[id(space)]
+                         - report.get("base_elevation_m", -1e9)) < 0.5]
+    if untouched:
+        out.append("")
+        out.append("  near the roof but left flat -- check this is what you "
+                   "meant:")
+        for story_name, name, top in untouched:
+            out.append("    %-12s %-30s top %.3f m" % (story_name, name, top))
+
+    if notes:
+        out.append("")
+        for note in notes:
+            out.append(" %s" % note)
+
+    out.append("")
+    out.append("This is a preview of the open document -- nothing was "
+               "written.  Save, then")
+    out.append("run the export and the build to apply it.")
+    FreeCAD.Console.PrintMessage("\n".join(out) + "\n")
+
+    if problems:
+        FreeCAD.Console.PrintWarning(
+            "\n%d problem(s) -- the export would refuse to write these:\n%s\n"
+            % (len(problems), "\n".join(problems)))
+
+
+run()

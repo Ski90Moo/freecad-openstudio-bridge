@@ -1,0 +1,148 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the FreeCAD-OpenStudio bridge contributors
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.  See LICENSE for the full text.
+
+# Shade an imported OpenStudio geometry document by surface type and
+# boundary condition.
+#
+# Run this from inside FreeCAD (Macro -> Macros... -> Execute) on a document
+# produced by fc_import_surfaces.py.  It exists as a macro rather than part of
+# the importer because headless FreeCAD creates no ViewObjects at all, so
+# colours cannot be set from the scripted run.
+#
+# Reads the OS_* properties the importer already attached -- no JSON needed.
+
+import FreeCAD
+
+COLOURS = {
+    ("Wall", "Outdoors"): (0.80, 0.75, 0.55),
+    ("Wall", "Surface"): (0.55, 0.65, 0.80),
+    ("Wall", "Ground"): (0.45, 0.35, 0.25),
+    ("Wall", "Adiabatic"): (0.70, 0.45, 0.70),
+    ("RoofCeiling", "Outdoors"): (0.65, 0.30, 0.25),
+    ("RoofCeiling", "Surface"): (0.60, 0.70, 0.70),
+    ("RoofCeiling", "Adiabatic"): (0.70, 0.45, 0.70),
+    ("Floor", "Ground"): (0.40, 0.40, 0.40),
+    ("Floor", "Surface"): (0.50, 0.60, 0.55),
+    ("Floor", "Outdoors"): (0.85, 0.55, 0.30),
+    ("Floor", "Adiabatic"): (0.70, 0.45, 0.70),
+}
+DEFAULT_COLOUR = (0.75, 0.75, 0.75)
+
+# An air boundary is the deliberate absence of a wall, so it gets a colour no
+# real construction uses and enough transparency to read as an opening.
+AIR_BOUNDARY_COLOUR = (0.90, 0.20, 0.80)
+AIR_BOUNDARY_TRANSPARENCY = 75
+
+SUBSURFACE_COLOURS = {
+    "FixedWindow": (0.35, 0.70, 0.90),
+    "OperableWindow": (0.30, 0.60, 0.85),
+    "GlassDoor": (0.40, 0.75, 0.85),
+    "Door": (0.60, 0.40, 0.20),
+    "OverheadDoor": (0.55, 0.35, 0.20),
+    "Skylight": (0.50, 0.80, 0.95),
+}
+
+
+def rgb(value):
+    """0xRRGGBB -> the 0..1 triple FreeCAD wants."""
+    return ((value >> 16 & 255) / 255.0, (value >> 8 & 255) / 255.0,
+            (value & 255) / 255.0)
+
+
+# Straight from the OpenStudio App's own palette, so a canopy is the same
+# colour in both tools and the group type is readable at a glance.  These are
+# the ThreeJSForwardTranslator material colours the App's 3D View renders.
+# The App lights them at about 73%, so BuildingShading arrives on screen as
+# #533870 rather than #714C99 -- the material colour is the one to store.
+SHADING_COLOURS = {
+    "Building": rgb(0x714C99),      # purple
+    "Site": rgb(0x4B7C95),          # teal
+    "Space": rgb(0x4C6EB2),         # dark blue
+}
+DEFAULT_SHADING_COLOUR = SHADING_COLOURS["Building"]
+
+# Interior surfaces are see-through so the plan reads from outside; anything
+# left at DEFAULT_COLOUR is a combination the importer did not expect and is
+# worth a look.
+INTERIOR_TRANSPARENCY = 60
+
+
+def run():
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        FreeCAD.Console.PrintError("No active document.\n")
+        return
+
+    surfaces = subsurfaces = unexpected = air = shades = 0
+    stale = True
+    for obj in doc.Objects:
+        view = getattr(obj, "ViewObject", None)
+        if view is None:
+            continue
+
+        sub_type = getattr(obj, "OS_SubSurfaceType", None)
+        if sub_type:
+            view.ShapeColor = SUBSURFACE_COLOURS.get(sub_type, (0.35, 0.70, 0.90))
+            view.Transparency = 30
+            subsurfaces += 1
+            continue
+
+        # Before the OS_SurfaceType test below: a shading surface has none.
+        if getattr(obj, "OS_ShadingSurface", False):
+            group_type = getattr(obj, "OS_ShadingGroupType", "") or ""
+            colour = SHADING_COLOURS.get(group_type)
+            if colour is None:
+                colour = DEFAULT_SHADING_COLOUR
+                unexpected += 1
+                FreeCAD.Console.PrintWarning(
+                    "unexpected shading group type %r on %s\n"
+                    % (group_type, obj.Label))
+            view.ShapeColor = colour
+            view.Transparency = 0
+            shades += 1
+            continue
+
+        surface_type = getattr(obj, "OS_SurfaceType", None)
+        if not surface_type:
+            continue
+
+        if hasattr(obj, "OS_AirBoundary"):
+            stale = False
+        if getattr(obj, "OS_AirBoundary", False):
+            view.ShapeColor = AIR_BOUNDARY_COLOUR
+            view.Transparency = AIR_BOUNDARY_TRANSPARENCY
+            air += 1
+            surfaces += 1
+            continue
+
+        boundary = getattr(obj, "OS_BoundaryCondition", "") or ""
+        key = (surface_type, boundary)
+        colour = COLOURS.get(key)
+        if colour is None:
+            colour = DEFAULT_COLOUR
+            unexpected += 1
+            FreeCAD.Console.PrintWarning(
+                "unexpected combination %s / %s on %s\n"
+                % (surface_type, boundary, obj.Label))
+        view.ShapeColor = colour
+        view.Transparency = (
+            INTERIOR_TRANSPARENCY if boundary == "Surface" else 0)
+        surfaces += 1
+
+    FreeCAD.Console.PrintMessage(
+        "colorize: %d surfaces (%d air boundaries), %d subsurfaces, "
+        "%d shading, %d unexpected\n"
+        % (surfaces, air, subsurfaces, shades, unexpected))
+    if stale and surfaces:
+        FreeCAD.Console.PrintWarning(
+            "no OS_AirBoundary property on any surface -- this "
+            "document predates it. Re-run dump_osm_geometry.py and "
+            "fc_import_surfaces.py to see air boundaries.\n")
+
+
+run()
