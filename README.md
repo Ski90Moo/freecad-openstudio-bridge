@@ -95,6 +95,43 @@ For the GUI macros, point FreeCAD's **Macro → Macros… → User macros locati
 at this checkout. If you would rather keep it elsewhere, set the
 `FREECAD_BRIDGE` environment variable to the checkout path instead.
 
+## Quickstart
+
+[`samples/FloorplanTest-02.FCStd`](samples/FloorplanTest-02.FCStd) is the
+worked example the rest of this file quotes numbers from — the two-storey
+light-industrial building above, 37 spaces on a 45° north axis, traced and
+fully tagged. Every command below runs against it as shipped, so you can see
+the whole pipeline work before drawing anything of your own:
+
+```powershell
+$FC = "C:\Program Files\FreeCAD 1.1\bin\python.exe"
+
+# exact vertices out of the drawing
+& $FC fc_export_floorplan.py samples\FloorplanTest-02.FCStd --out plan.json
+
+# build the model  (writes demo.osm + demo.fcmap.json)
+osvenv\Scripts\python.exe build_osm_geometry.py plan.json --out demo.osm
+
+# read the built geometry back out
+osvenv\Scripts\python.exe dump_osm_geometry.py demo.osm --out surfaces.json
+
+# and the windows and doors already drawn on it
+& $FC fc_export_openings.py samples\FloorplanTest-02.FCStd --out openings.json
+```
+
+You should get **2 stories, 37 spaces, 1267.3 m²**, then **321 surfaces** and
+**28 openings** (5 doors, 15 fixed windows, 4 glass doors, 4 overhead doors).
+The build step prints an area check — every space's floor area compared with
+what FreeCAD measured — and fails if any disagrees by more than 0.1%. On this
+model the worst disagreement is 0.0092%.
+
+The sample comes fully tagged, so these four leave it byte-for-byte unchanged
+— the exporters only write back into a document when they have to mint an
+`OS_SpaceId` for something untagged, and there is nothing left to mint.
+`samples/surfaces.json` and `samples/openings.json` are exactly what the third
+and fourth commands produce, kept so the exchange format can be read without
+running anything at all.
+
 ## Documentation
 
 | | |
@@ -104,7 +141,7 @@ at this checkout. If you would rather keep it elsewhere, set the
 | [IDENTITY.md](IDENTITY.md) | How the bridge knows a room is the same room after the plan moves |
 | [FreeCAD-FAQ.md](FreeCAD-FAQ.md) | FreeCAD behaviours that bite while tracing |
 | [elevations/README.md](elevations/README.md) | Optional: reading openings out of a PDF drawing set |
-| [samples/](samples/) | A real `surfaces.json` and `openings.json`, to see the exchange format |
+| [samples/](samples/) | The worked example drawing, and a real `surfaces.json` and `openings.json` |
 
 ## Licence
 
@@ -171,8 +208,9 @@ safe to leave in the document. Building north axis goes on the **document** as
 Each sketch's own `Placement` is its origin — every position test runs in the
 sketch's own frame via `Placement.inverse()`, so both layouts work:
 
-- **side by side** on the sheet, as `FloorplanTest-01.FCStd` does;
-- **stacked** at real elevations, as `FloorplanTest-02.FCStd` does
+- **side by side** on the sheet, every sketch left at `z = 0`;
+- **stacked** at real elevations, as the shipped
+  [sample](samples/FloorplanTest-02.FCStd) does
   (`Sketch001.Placement.Base.z = 3378.2`).
 
 Stacked, the stories share a footprint, so in-plane position alone cannot say
@@ -233,11 +271,11 @@ voids, and courtyards inside the envelope. The area is reported so you can see
 what was left out. The point is that the decision is written down rather than
 being a hole in the model.
 
-> On `FloorplanTest-01.FCStd` as it stands, the Level 2 sketch traces the full
-> building footprint, so both stories come out at 923.4 m² — a mezzanine
+> On an earlier drawing of the sample building, the Level 2 sketch traced the
+> full building footprint, so both stories came out at 923.4 m² — a mezzanine
 > covering 100% of the ground floor. Marking the three large regions
-> `SKIP` drops the second story to 14 rooms and 406 m², which is the shape your
-> notes describe. If you want those areas modelled as open-to-below companion
+> `SKIP` dropped the second story to 14 rooms and 406 m², which is the building
+> as drawn. To model those areas as open-to-below companion
 > spaces instead, label them normally and apply the existing
 > `assign_air_boundary_construction` measure to their floors.
 
@@ -596,8 +634,8 @@ generated. So the bridge does them.
 Generate the model, bring the surfaces back into the *same* document, then:
 
 ```powershell
-.\bridge.ps1 import surfaces.json --into ..\FloorplanTest-02.FCStd
-.\bridge.ps1 planes ..\FloorplanTest-02.FCStd
+.\bridge.ps1 import surfaces.json --into samples\FloorplanTest-02.FCStd
+.\bridge.ps1 planes samples\FloorplanTest-02.FCStd
 ```
 
 `planes` finds every distinct exterior wall plane and gives each one a sketch:
@@ -663,7 +701,7 @@ and re-adding it would cost every constraint made against it.
 
 ```powershell
 .\bridge.ps1 crop                                    # cut the sheet into facades
-.\bridge.ps1 elevations ..\FloorplanTest-02.FCStd elevations\facades\facade_images.json
+.\bridge.ps1 elevations samples\FloorplanTest-02.FCStd elevations\facades\facade_images.json
 ```
 
 `crop` renders the elevation sheet and cuts one image per facade; `elevations`
@@ -953,7 +991,7 @@ Put a roof-plan or site-plan image on the sketch plane the same way `elevations`
 places a facade drawing, trace each canopy as a closed rectangle, and:
 
 ```powershell
-.\bridge.ps1 shading ..\FloorplanTest-02.FCStd --out shading.json
+.\bridge.ps1 shading samples\FloorplanTest-02.FCStd --out shading.json
 .\bridge.ps1 apply-shading runs\fptest02.osm shading.json
 ```
 
@@ -1026,7 +1064,7 @@ shape can be the roof: a padded `PartDesign::Body`, its `Pad`, or a bare face
 traced over the plan.
 
 ```powershell
-.\bridge.ps1 seed ..\FloorplanTest-02.FCStd --init-roof
+.\bridge.ps1 seed samples\FloorplanTest-02.FCStd --init-roof
 ```
 
 puts the dropdown on every candidate and leaves them all at `Ignore`, which is
@@ -1158,16 +1196,16 @@ the exercise against what the pitch buys — here it adds 0.09% of roof area and
 $FC = "C:\Program Files\FreeCAD 1.1\bin\python.exe"
 
 # 1. add the OS_* properties, then set elevations / heights / OS_Include in the GUI
-& $FC fc_seed_labels.py ..\FloorplanTest-01.FCStd --init-stories
+& $FC fc_seed_labels.py YourPlan.FCStd --init-stories
 
 # 2. drop a placeholder label into every room
-& $FC fc_seed_labels.py ..\FloorplanTest-01.FCStd
+& $FC fc_seed_labels.py YourPlan.FCStd
 
 # 2b. IN THE GUI: open the document, run label_style.FCMacro (Macro -> Execute)
 #     to make the labels visible, then name them.
 
 # 3. export exact vertices
-& $FC fc_export_floorplan.py ..\FloorplanTest-01.FCStd --out runs\floorplans\mybuilding.json
+& $FC fc_export_floorplan.py YourPlan.FCStd --out runs\floorplans\mybuilding.json
 
 # 4. build the model  (writes mybuilding.osm + mybuilding.fcmap.json)
 osvenv\Scripts\python.exe build_osm_geometry.py runs\floorplans\mybuilding.json `
@@ -1184,9 +1222,9 @@ Then in Claude: `load_osm_model` → `validate_model` → `view_model`, and on t
 
 ```powershell
 osvenv\Scripts\python.exe dump_osm_geometry.py runs\mybuilding.osm --out surfaces.json
-& $FC fc_import_surfaces.py surfaces.json --into ..\FloorplanTest-02.FCStd
-& $FC verify_roundtrip.py ..\FloorplanTest-02.FCStd surfaces.json  # must be 0.000000 mm
-& $FC fc_seed_openings.py ..\FloorplanTest-02.FCStd
+& $FC fc_import_surfaces.py surfaces.json --into samples\FloorplanTest-02.FCStd
+& $FC verify_roundtrip.py samples\FloorplanTest-02.FCStd surfaces.json  # must be 0.000000 mm
+& $FC fc_seed_openings.py samples\FloorplanTest-02.FCStd
 ```
 
 **`--into` puts the generated surfaces in the document the plan was traced
@@ -1277,7 +1315,7 @@ not change what shows up; `OS_Construction` carries the name for identifying
 which pair a face belongs to.
 
 ```powershell
-& $FC fc_export_openings.py ..\FloorplanTest-02.FCStd --out openings.json
+& $FC fc_export_openings.py samples\FloorplanTest-02.FCStd --out openings.json
 osvenv\Scripts\python.exe apply_openings.py runs\mybuilding.osm openings.json
 ```
 
@@ -1355,7 +1393,7 @@ Same shape, one sketch later — a plan sketch at the height of the plate rather
 than an elevation sketch on the wall (§7):
 
 ```powershell
-& $FC fc_export_shading.py ..\FloorplanTest-02.FCStd --out shading.json
+& $FC fc_export_shading.py samples\FloorplanTest-02.FCStd --out shading.json
 osvenv\Scripts\python.exe apply_shading.py runs\mybuilding.osm shading.json
 ```
 
@@ -1367,11 +1405,11 @@ compared with what went in before the model is saved.
 
 ```powershell
 # put OS_RoofMethod on every candidate; they all start at Ignore
-& $FC fc_seed_labels.py ..\FloorplanTest-02.FCStd --init-roof
+& $FC fc_seed_labels.py samples\FloorplanTest-02.FCStd --init-roof
 
 # ... pick Extend or Attic in the Data tab, then preview with
 # review_roof.FCMacro, then:
-& $FC fc_export_floorplan.py ..\FloorplanTest-02.FCStd --out plan.json
+& $FC fc_export_floorplan.py samples\FloorplanTest-02.FCStd --out plan.json
 osvenv\Scripts\python.exe build_osm_geometry.py plan.json --out runs\mybuilding.osm
 ```
 
@@ -1403,9 +1441,9 @@ this document's labels. Nothing reaches disk until you save.
 trip. It reports before it writes:
 
 ```powershell
-& $FC fc_relabel.py ..\FloorplanTest-02.FCStd `
+& $FC fc_relabel.py samples\FloorplanTest-02.FCStd `
     --previous runs\fptest02.fcmap.json           # report
-& $FC fc_relabel.py ..\FloorplanTest-02.FCStd `
+& $FC fc_relabel.py samples\FloorplanTest-02.FCStd `
     --previous runs\fptest02.fcmap.json --apply   # write
 ```
 
@@ -1457,7 +1495,7 @@ constraints (`Sketch.Constraints.WallX_204`) are the one durable reference if
 you do want to constrain something.
 
 ```powershell
-& $FC fc_export_floorplan.py ..\FloorplanTest-01.FCStd --out runs\floorplans\mybuilding.json
+& $FC fc_export_floorplan.py YourPlan.FCStd --out runs\floorplans\mybuilding.json
 
 # report only
 osvenv\Scripts\python.exe update_osm_geometry.py runs\mybuilding.osm `

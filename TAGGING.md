@@ -491,7 +491,7 @@ Anything with a shape can be the roof: a `PartDesign::Body`, the `Pad` inside
 it, or a bare face traced over the plan. Run
 
 ```
-.\bridge.ps1 seed ..\FloorplanTest-02.FCStd --init-roof
+.\bridge.ps1 seed samples\FloorplanTest-02.FCStd --init-roof
 ```
 
 and every candidate gets the properties below, all set to `Ignore` — the state

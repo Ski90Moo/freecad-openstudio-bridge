@@ -8,6 +8,14 @@ This does **not** relax the rule that geometry comes from CAD. Wall geometry
 still comes from the traced FreeCAD sketch; only the openings come from the
 drawing set, and they come from its *coordinates*, not from looking at it.
 
+> **This is the one path you cannot run from a clone.** It starts from a PDF
+> drawing set, and drawing sets carry title blocks and client identification,
+> so none is shipped here — the commands below name the author's files and you
+> will need to substitute your own. The *result* of this path is shipped: the
+> 28 windows and doors in [`samples/`](../samples/) were placed by it, and the
+> four elevation images it worked from are in `facades/`. Everything
+> downstream of `openings.json` runs normally against the sample.
+
 ## What the sheets actually are
 
 | sheet | content | form |

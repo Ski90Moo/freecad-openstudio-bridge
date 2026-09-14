@@ -13,11 +13,14 @@ venv/
 # bridge reads them as inputs you supply, and none belong in the repo.
 *.pdf
 
-# FreeCAD documents and their backups.  These are the user's drawing, not
-# source -- the repo describes how to build one, it does not ship one.
+# FreeCAD documents and their backups.  Your own drawings are inputs you
+# supply, not source, so they stay out -- with one deliberate exception:
+# samples/FloorplanTest-02.FCStd is the worked example every command in the
+# docs runs against, and the docs are worth nothing without it.
 *.FCStd
 *.FCStd1
 *.FCBak
+!samples/FloorplanTest-02.FCStd
 
 # OpenStudio models and their run directories.
 *.osm
