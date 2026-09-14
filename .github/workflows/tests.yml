@@ -51,3 +51,28 @@ jobs:
 
       - name: Run the suite
         run: python -m unittest discover -s tests -v
+
+      # The unit tests exercise the pieces in isolation and never touch
+      # samples/.  This builds the whole sample model end to end -- the
+      # heaviest path in the repo, and the one where a platform difference
+      # would actually surface.  It also pins the numbers the README quotes,
+      # so they cannot drift unnoticed.
+      #
+      # It starts from samples/plan.json rather than the .FCStd because the
+      # export is FreeCAD's half and no runner has FreeCAD.  The floorplan
+      # JSON is the seam between the two halves, which makes it exactly the
+      # right place to pick the pipeline up.
+      - name: Build the sample model
+        shell: bash
+        run: |
+          python build_osm_geometry.py samples/plan.json --out demo.osm
+          python - <<'PY'
+          import openstudio
+          model = openstudio.osversion.VersionTranslator().loadModel(
+              openstudio.path("demo.osm")).get()
+          got = (len(model.getSpaces()), len(model.getSurfaces()),
+                 len(model.getBuildingStorys()), len(model.getThermalZones()))
+          print("spaces %d  surfaces %d  stories %d  zones %d" % got)
+          assert got == (37, 321, 2, 37), "built model does not match the README"
+          print("matches the README")
+          PY

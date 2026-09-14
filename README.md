@@ -93,13 +93,17 @@ Run the tests — 290 of them, no FreeCAD or drawing needed for all but a few:
 osvenv/Scripts/python.exe -m unittest discover -s tests
 ```
 
-The same suite runs on Ubuntu, Windows and macOS on every push — that is what
-the badge above reports, and the only thing keeping *"the Python is
-platform-independent"* an honest claim rather than a hopeful one. Eleven tests
-skip there: seven need FreeCAD's geometry kernel, which no runner has, and four
-check a built model that lives outside the repo. Neither the FreeCAD side nor a
-full round trip can be covered automatically; both are exercised by hand
-against [`samples/`](samples/).
+The same suite runs on Ubuntu, Windows and macOS on every push, and CI then
+builds the sample model from [`samples/plan.json`](samples/plan.json) and
+checks it comes out at 37 spaces, 321 surfaces, 2 stories and 37 zones. So the
+model half is exercised end to end on three platforms, not just in parts —
+which is what the badge above reports, and the only thing keeping *"the Python
+is platform-independent"* an honest claim rather than a hopeful one.
+
+Eleven tests skip on a runner: seven need FreeCAD's geometry kernel, which none
+has, and four check air-boundary constructions, which are applied by a measure
+outside this repo. The FreeCAD half cannot be covered automatically and is
+exercised by hand against [`samples/`](samples/).
 
 For the GUI macros, point FreeCAD's **Macro → Macros… → User macros location**
 at this checkout. If you would rather keep it elsewhere, set the
