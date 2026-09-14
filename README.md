@@ -95,8 +95,8 @@ osvenv/Scripts/python.exe -m unittest discover -s tests
 
 The same suite runs on Ubuntu, Windows and macOS on every push — that is what
 the badge above reports, and the only thing keeping *"the Python is
-platform-independent"* an honest claim rather than a hopeful one. Sixteen tests
-skip there: seven need FreeCAD's geometry kernel, which no runner has, and nine
+platform-independent"* an honest claim rather than a hopeful one. Eleven tests
+skip there: seven need FreeCAD's geometry kernel, which no runner has, and four
 check a built model that lives outside the repo. Neither the FreeCAD side nor a
 full round trip can be covered automatically; both are exercised by hand
 against [`samples/`](samples/).
