@@ -1,5 +1,7 @@
 # FreeCAD ↔ OpenStudio geometry bridge
 
+[![tests](https://github.com/Ski90Moo/freecad-openstudio-bridge/actions/workflows/tests.yml/badge.svg)](https://github.com/Ski90Moo/freecad-openstudio-bridge/actions/workflows/tests.yml)
+
 **Draw the floor plan once in FreeCAD; read exact coordinates out of it.**
 
 Headless Python that turns a traced FreeCAD floor plan into OpenStudio
@@ -90,6 +92,14 @@ Run the tests — 290 of them, no FreeCAD or drawing needed for all but a few:
 ```
 osvenv/Scripts/python.exe -m unittest discover -s tests
 ```
+
+The same suite runs on Ubuntu, Windows and macOS on every push — that is what
+the badge above reports, and the only thing keeping *"the Python is
+platform-independent"* an honest claim rather than a hopeful one. Sixteen tests
+skip there: seven need FreeCAD's geometry kernel, which no runner has, and nine
+check a built model that lives outside the repo. Neither the FreeCAD side nor a
+full round trip can be covered automatically; both are exercised by hand
+against [`samples/`](samples/).
 
 For the GUI macros, point FreeCAD's **Macro → Macros… → User macros location**
 at this checkout. If you would rather keep it elsewhere, set the

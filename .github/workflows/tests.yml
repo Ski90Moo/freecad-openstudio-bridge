@@ -1,0 +1,53 @@
+# The suite runs on three operating systems, not because the bridge is used on
+# three, but because it has only ever been *run* on one.  The Python is meant
+# to be platform-independent and the README says so; this is what turns that
+# from a belief into a checked fact.  Case-sensitive filesystems and path
+# separators are where Windows-only code usually breaks first.
+#
+# What this cannot cover: anything needing FreeCAD's geometry kernel.  There is
+# no FreeCAD on a runner, so the fc_*.py side and tests/test_pitched_faces.py
+# skip here and are exercised by hand under FreeCAD's own interpreter.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Every platform reports, rather than the first failure hiding the rest --
+      # which matters most when the question being asked *is* "which platform".
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Not ceremony.  Every openstudio test raises SkipTest when the import
+      # fails, so a runner missing a shared library the wheel needs would skip
+      # its way to a green tick and the badge would mean nothing.  This fails
+      # loudly instead.
+      - name: Check openstudio actually imports
+        run: python -c "import openstudio; print('openstudio', openstudio.openStudioLongVersion())"
+
+      - name: Run the suite
+        run: python -m unittest discover -s tests -v
