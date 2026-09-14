@@ -8,6 +8,16 @@ and doors can be placed by hand on the real wall faces, and propagates plan
 changes into an existing model *without* losing the HVAC, constructions and
 schedules already assigned to unchanged zones.
 
+![The built OpenStudio model reopened in FreeCAD](docs/hero.png)
+
+*A built model read back into FreeCAD and shaded by `colorize.FCMacro`:
+exterior walls tan, roof brown, interior partitions translucent blue, windows
+cyan, doors and overhead doors brown, entrance canopies purple. The magenta
+panels are **air boundaries** — the deliberate absence of a wall, where two
+spaces are open to each other. The pale plane underneath is the
+scale-calibrated floor plan image the whole model was traced from, still sitting
+at z = 0 where it was drawn.*
+
 ```
   FreeCAD Python 3.11                     bridge venv (Python 3.12)
   (bundled with FreeCAD 1.1)              pip install openstudio==3.11.0
