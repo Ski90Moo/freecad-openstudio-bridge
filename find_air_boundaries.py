@@ -1079,8 +1079,25 @@ def main():
                          "coupling and reach the results. 0 disables the cap."
                          % DEFAULT_MAX_ACH)
     ap.add_argument("--apply-json", action="store_true",
-                    help="emit the apply_measure arguments as JSON")
+                    help="emit the arguments apply_air_boundaries.py takes, "
+                         "as JSON on stdout")
+    ap.add_argument("--out",
+                    help="with --apply-json, write the JSON here as UTF-8 "
+                         "instead of to stdout -- safer than a shell redirect")
     args = ap.parse_args()
+
+    # OpenStudio's C++ logger writes to stdout, not stderr, so a model that
+    # needs colinear points added to a polyhedron prints two dozen lines right
+    # where the JSON is supposed to start.  --apply-json promises something
+    # pipeable, so on that path the logger is silenced and stdout carries the
+    # report and nothing else.  2>/dev/null does not help: the noise was never
+    # on stderr to begin with.
+    # Raising the level rather than calling disable(): disabling detaches the
+    # sink, and boost's own default sink then takes over and prints *more*,
+    # at Info, with timestamps.  Measured, not guessed.
+    if args.apply_json:
+        openstudio.Logger.instance().standardOutLogger().setLogLevel(
+            openstudio.Fatal)
 
     if args.delta_t <= 0:
         sys.exit("--delta-t must be greater than 0; a zero temperature "
@@ -1142,12 +1159,25 @@ def main():
             r["delta_t_at_1kw"] *= r["uncapped_ach"] / args.max_ach
 
     if args.apply_json:
-        print(json.dumps([{
+        report = json.dumps([{
             "construction_name": r["construction_name"],
             "surface_names": ",".join(r["surface_names"]),
             "air_exchange_method": "SimpleMixing",
             "simple_mixing_ach": round(r["recommended_ach"], 2),
-        } for r in results], indent=2))
+        } for r in results], indent=2)
+        # --out rather than a redirect, because PowerShell's `>` writes UTF-16
+        # and the reader opens the file as UTF-8.  That combination fails on
+        # the very first byte, a long way from anything that looks like the
+        # cause.  Piping has the same hazard; writing the file here has none.
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as handle:
+                handle.write(report + "\n")
+            print("wrote %s\n  %d construction(s), %d surface(s)"
+                  % (os.path.abspath(args.out), len(results),
+                     sum(len(r["surface_names"]) for r in results)),
+                  file=sys.stderr)
+        else:
+            print(report)
         return 0
 
     total_surfaces = sum(len(r["surface_names"]) for r in results)

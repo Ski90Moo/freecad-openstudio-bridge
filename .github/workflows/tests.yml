@@ -66,6 +66,18 @@ jobs:
         shell: bash
         run: |
           python build_osm_geometry.py samples/plan.json --out demo.osm
+
+          # samples/rated-walls.txt names the walls that are fire-rated rather
+          # than open, which no rule can tell from the plan alone.  They are
+          # surface names, and surface names are positional: if the drawing
+          # changes, they point at different walls.  That is not silent --
+          # test_the_fire_wall_stayed_solid fails when they rot, which is
+          # exactly what this step exists to catch.
+          python find_air_boundaries.py demo.osm samples/plan.json \
+            --apply-json --solid-surface "$(cat samples/rated-walls.txt)" \
+            --out boundaries.json
+          python apply_air_boundaries.py demo.osm boundaries.json --out demo.osm
+
           python - <<'PY'
           import openstudio
           model = openstudio.osversion.VersionTranslator().loadModel(
@@ -74,5 +86,23 @@ jobs:
                  len(model.getBuildingStorys()), len(model.getThermalZones()))
           print("spaces %d  surfaces %d  stories %d  zones %d" % got)
           assert got == (37, 321, 2, 37), "built model does not match the README"
+
+          # Without this the air-boundary invariant tests below would iterate
+          # an empty list and pass while testing nothing -- the same silent
+          # green the openstudio import check exists to prevent.
+          boundaries = len(model.getConstructionAirBoundarys())
+          print("air-boundary constructions: %d" % boundaries)
+          assert boundaries == 14, "expected 14 air boundaries, got %d" % boundaries
           print("matches the README")
           PY
+
+      # Re-run the invariants against the model just built.  Without
+      # BRIDGE_TEST_OSM these four skip for want of a model, which is how they
+      # came to run only on the author's desk.
+      - name: Check the built model's air boundaries
+        shell: bash
+        env:
+          BRIDGE_TEST_OSM: demo.osm
+        run: |
+          python -m unittest -v \
+            tests.test_air_boundary_sizing.TestAppliedModelInvariants

@@ -401,8 +401,13 @@ class TestSolidOverride(unittest.TestCase):
         self.assertEqual(dropped, [])
 
 
-OSM = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "..", "MCP", "runs", "fptest02.osm")
+# The model to check these invariants against.  BRIDGE_TEST_OSM is how CI
+# points them at the one it just built from samples/ -- without it these tests
+# could only ever run on the machine that happens to have a model at the path
+# below, which meant they never ran anywhere but one desk.
+OSM = os.environ.get("BRIDGE_TEST_OSM") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "..", "MCP", "runs", "fptest02.osm")
 
 
 @unittest.skipUnless(os.path.exists(OSM), "built model not present")
@@ -471,37 +476,49 @@ class TestAppliedModelInvariants(unittest.TestCase):
     def test_the_fire_wall_stayed_solid(self):
         """205 Mezzanine to the lobby and to 101c is rated, not a guardrail.
 
-        Keyed on the pair of spaces, never on surface names.  Surface names
-        are positional: rebuilding a space renumbers them, so the four names
-        this test used to name moved to entirely different walls when the roof
-        went in, and it started asserting things about the wrong geometry.
-        A space pair is what actually survives a rebuild.
+        Keyed on the pair of ROOM NUMBERS, never on surface names and never on
+        full space names.  Surface names are positional: rebuilding a space
+        renumbers them, so the four names this test used to name moved to
+        entirely different walls when the roof went in, and it started
+        asserting things about the wrong geometry.
+
+        A full space name carries the same hazard one level up.  The leading
+        index in `034-205-Mezzanine` is an export-order counter, not identity:
+        exporting the same drawing after a room was added anywhere earlier in
+        the order shifts every index after it, and this test went looking for
+        a wall that was still there under a name that no longer existed.  The
+        room number is the part the drawing actually fixes.
         """
-        for pair in (("034-205-Mezzanine", "001-101-Lobby Reception"),
-                     ("034-205-Mezzanine", "004-101c-Hallway")):
+        for pair in (("205", "101"), ("205", "101c")):
             faces = [s for s in self.model.getSurfaces()
-                     if self.space_pair(s) == frozenset(pair)]
-            self.assertTrue(faces, "no wall between %s and %s" % pair)
+                     if self.room_pair(s) == frozenset(pair)]
+            self.assertTrue(faces, "no wall between rooms %s and %s" % pair)
             for surface in faces:
                 construction = surface.construction()
                 self.assertFalse(
                     construction.is_initialized(),
-                    "%s (%s to %s) is %s -- that wall is rated, not a "
+                    "%s (rooms %s to %s) is %s -- that wall is rated, not a "
                     "guardrail" % (surface.nameString(), pair[0], pair[1],
                                    construction.get().nameString()
                                    if construction.is_initialized() else ""))
 
     @staticmethod
-    def space_pair(surface):
-        """The two spaces an interior surface separates, or None."""
+    def room_number(space_name):
+        """`034-205-Mezzanine` -> `205`; the drawing's own label for the room."""
+        parts = space_name.split("-")
+        return parts[1] if len(parts) > 2 else space_name
+
+    @classmethod
+    def room_pair(cls, surface):
+        """The two room numbers an interior surface separates, or None."""
         here, adjacent = surface.space(), surface.adjacentSurface()
         if not (here.is_initialized() and adjacent.is_initialized()):
             return None
         there = adjacent.get().space()
         if not there.is_initialized():
             return None
-        return frozenset((here.get().nameString(),
-                          there.get().nameString()))
+        return frozenset((cls.room_number(here.get().nameString()),
+                          cls.room_number(there.get().nameString())))
 
 
 class RebuildRiskTests(unittest.TestCase):

@@ -87,23 +87,26 @@ along so `schema/floorplan.schema.json` can be checked against a real exported
 plan rather than only read — a schema nothing validates against is decoration.
 `requirements-elevations.txt` adds the PDF-reading extras for `elevations/`.
 
-Run the tests — 290 of them, no FreeCAD or drawing needed for all but a few:
+Run the tests — 302 of them, no FreeCAD or drawing needed for all but a few:
 
 ```
 osvenv/Scripts/python.exe -m unittest discover -s tests
 ```
 
-The same suite runs on Ubuntu, Windows and macOS on every push, and CI then
-builds the sample model from [`samples/plan.json`](samples/plan.json) and
-checks it comes out at 37 spaces, 321 surfaces, 2 stories and 37 zones. So the
+The same suite runs on Ubuntu, Windows and macOS on every push. CI then builds
+the sample model from [`samples/plan.json`](samples/plan.json), applies its air
+boundaries, and checks the result: 37 spaces, 321 surfaces, 2 stories, 37 zones
+and 14 air-boundary constructions, with the rated walls still solid. So the
 model half is exercised end to end on three platforms, not just in parts —
 which is what the badge above reports, and the only thing keeping *"the Python
 is platform-independent"* an honest claim rather than a hopeful one.
 
-Eleven tests skip on a runner: seven need FreeCAD's geometry kernel, which none
-has, and four check air-boundary constructions, which are applied by a measure
-outside this repo. The FreeCAD half cannot be covered automatically and is
-exercised by hand against [`samples/`](samples/).
+Eleven skip in that first suite run: seven need FreeCAD's geometry kernel,
+which no runner has, and four need a built model, which at that point does not
+exist yet. Those four are the air-boundary invariants, and CI re-runs them
+against the model it has just built — that is what `BRIDGE_TEST_OSM` is for.
+Only the seven FreeCAD tests go uncovered, and they are exercised by hand
+against [`samples/`](samples/).
 
 For the GUI macros, point FreeCAD's **Macro → Macros… → User macros location**
 at this checkout. If you would rather keep it elsewhere, set the
@@ -142,9 +145,14 @@ model the worst disagreement is 0.0092%.
 The sample comes fully tagged, so these four leave it byte-for-byte unchanged
 — the exporters only write back into a document when they have to mint an
 `OS_SpaceId` for something untagged, and there is nothing left to mint.
-`samples/surfaces.json` and `samples/openings.json` are exactly what the third
-and fourth commands produce, kept so the exchange format can be read without
-running anything at all.
+
+`samples/openings.json` is exactly what the fourth command produces.
+`samples/surfaces.json` is the same format but taken from the fully worked
+model — it carries the 28 openings and 4 shading surfaces a bare geometry
+build has not got yet, and its space names are one ordinal apart, because
+`build_osm_geometry.py` reuses the ordinals a previous build gave each
+`OS_SpaceId` and a build from scratch has no previous build to read. Both are
+kept so the exchange format can be read without running anything at all.
 
 ## Documentation
 
@@ -503,14 +511,34 @@ OpenStudio's: `034-205-Mezzanine` keeps its ordinal because
 `OS_SpaceId`. That is why the report identifies every surface by the spaces it
 joins.
 
-The full reproducing command for `FloorplanTest-02`:
+Finding them is one command and applying them is another, so the report can be
+read before anything is written:
 
 ```powershell
-osvenv\Scripts\python.exe find_air_boundaries.py `
-    runs\fptest02.osm runs\floorplans\fptest02.json `
-    --open-surface 'Surface 176,Surface 28,Surface 178,Surface 211,Surface 129' `
-    --solid-surface 'Surface 292,Surface 221'
+osvenv\Scripts\python.exe find_air_boundaries.py demo.osm samples\plan.json `
+    --apply-json --solid-surface (Get-Content samples\rated-walls.txt) `
+    --out boundaries.json
+osvenv\Scripts\python.exe apply_air_boundaries.py demo.osm boundaries.json `
+    --out demo.osm
 ```
+
+Fourteen constructions over 46 surfaces, which is what CI asserts on every
+push. Use `--out` rather than `>`: PowerShell's redirect writes UTF-16 and the
+reader opens UTF-8, which fails on the first byte a long way from the cause.
+
+`--solid-surface` is the modeller's veto, and
+[`samples/rated-walls.txt`](samples/rated-walls.txt) holds it for the sample:
+205 Mezzanine meets the lobby and 101c through **rated** walls, which look
+exactly like guardrail edges to rule 2. No rule can tell a fire wall from an
+open edge by its geometry, because the difference is not geometric.
+
+> **Those are surface names, and surface names are positional.** Re-export
+> after moving anything and they may point at different walls entirely — the
+> list that used to be here named a floor between two offices by the time
+> anyone checked. This is not silent: `test_the_fire_wall_stayed_solid` keys on
+> room numbers, which the drawing does fix, and fails when the declaration
+> rots. Re-derive it by running without `--solid-surface` and reading which
+> constructions span the rooms that should be solid.
 
 #### The air-change rate is sized, not defaulted
 
@@ -518,7 +546,8 @@ EnergyPlus takes one rate per `Construction:AirBoundary` and applies it
 "using the volume of the smaller zone as the basis" (`Energy+.idd`, field N1).
 One rate can therefore only be right for one pair of spaces, so
 `find_air_boundaries.py` groups openings **by space pair** and emits one
-construction each — sixteen on `FloorplanTest-02`, not four.
+construction each — sixteen on `FloorplanTest-02`, not four, and fourteen once
+the two rated walls above are declared solid.
 
 For each pair it sizes the buoyancy exchange from the opening geometry. The two
 orientations are different problems:

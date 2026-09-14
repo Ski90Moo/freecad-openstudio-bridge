@@ -12,7 +12,8 @@ param(
     [Parameter(Mandatory = $true, Position = 0)]
     [ValidateSet('seed', 'relabel', 'export', 'build', 'dump', 'import',
                  'verify', 'planes', 'crop', 'elevations', 'openings',
-                 'apply', 'shading', 'apply-shading', 'update')]
+                 'apply', 'shading', 'apply-shading', 'air-boundaries',
+                 'apply-air-boundaries', 'update')]
     [string]$Command,
 
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -40,6 +41,8 @@ $scripts = @{
     apply    = @{ py = 'venv';    file = 'apply_openings.py' }
     shading  = @{ py = 'freecad'; file = 'fc_export_shading.py' }
     'apply-shading' = @{ py = 'venv'; file = 'apply_shading.py' }
+    'air-boundaries' = @{ py = 'venv'; file = 'find_air_boundaries.py' }
+    'apply-air-boundaries' = @{ py = 'venv'; file = 'apply_air_boundaries.py' }
     update   = @{ py = 'venv';    file = 'update_osm_geometry.py' }
 }
 
