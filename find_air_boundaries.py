@@ -870,8 +870,13 @@ def promote_declared(model, openings, names):
             continue
         mine = surface.space().get().nameString()
         theirs = partner.space().get().nameString()
-        kind, space_a, space_b = existing.get(frozenset((mine, theirs)),
-                                             ("declared", mine, theirs))
+        pair = frozenset((mine, theirs))
+        kind, space_a, space_b = existing.get(pair, ("declared", mine, theirs))
+        # Two declared surfaces can share a pair neither rule nor an earlier
+        # declaration already covers -- the second one has to see the first's
+        # choice of kind/space_a/space_b, or it mints its own and group_pairs
+        # (keyed on that exact triple) gives the pair two constructions.
+        existing.setdefault(pair, (kind, space_a, space_b))
         vertical = surface.surfaceType() == "Wall"
         found.append({
             "kind": kind,

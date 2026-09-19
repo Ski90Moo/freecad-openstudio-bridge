@@ -375,5 +375,149 @@ class ExternalReferenceTests(unittest.TestCase):
         self.assertEqual(fso.add_plan_edge(sketch, (PLAN, 1)), 0)
 
 
+class TouchingPlanGeometryTests(unittest.TestCase):
+    """What else the plan touches a facade's plane at, beyond the wall line
+    add_plan_edge already offers -- found on FloorplanTest-04's own
+    "Openings South", drawn by hand with the Sketcher's External geometry
+    tool: G,X on a wall running *along* the plane, G,I on one that only
+    *crosses* it. Both are "an edge with an endpoint on this plane" to
+    FreeCAD; a perpendicular one just projects to a point on screen, which is
+    FreeCAD's own doing, not a distinction this code has to make.
+    """
+
+    def setUp(self):
+        self.plan = PlanSketch("FirstFP Sketch")   # the usual 50x18 rectangle
+
+    def find(self, sketches, normal=(0, -1, 0), offset=0.0, exclude=None):
+        return fso.touching_plan_geometry(sketches, group(normal, offset),
+                                          exclude)
+
+    def test_a_perpendicular_wall_is_offered(self):
+        """T-intersects the south wall at y=0 -- an interior partition, the
+        G,I case. Its far end (y=8, off the plane) does not matter; one
+        endpoint on the plane is enough to be a snap target."""
+        interior = Edge(Vector(10.0, 0.0), Vector(10.0, 8.0))
+        plan = PlanSketch("FirstFP Sketch", extra=[interior])
+        found = self.find([plan])
+        self.assertIn((plan, "Edge5"), found)      # 4 rectangle sides + this
+
+    def test_a_wall_running_along_the_plane_is_also_offered(self):
+        """The G,X case: a second, distinct wall line sharing the facade's
+        own plane -- not the main envelope edge, a genuinely separate run
+        (found on this building: a small recessed feature's own front
+        wall). Both endpoints are on the plane, not just one."""
+        along = Edge(Vector(20.0, 0.0), Vector(24.0, 0.0))
+        plan = PlanSketch("FirstFP Sketch", extra=[along])
+        found = self.find([plan])
+        self.assertIn((plan, "Edge5"), found)
+
+    def test_a_wall_not_touching_the_plane_is_not_offered(self):
+        interior = Edge(Vector(10.0, 2.0), Vector(10.0, 8.0))   # never y=0
+        plan = PlanSketch("FirstFP Sketch", extra=[interior])
+        found = self.find([plan])
+        self.assertNotIn((plan, "Edge5"), found)
+
+    def test_the_excluded_anchor_edge_is_not_offered_again(self):
+        """add_plan_edge already adds this one; offering it a second time
+        would just be a duplicate reference to the same line."""
+        found = self.find([self.plan], exclude=(self.plan, 1))
+        self.assertNotIn((self.plan, "Edge1"), found)
+
+    def test_duplicate_edges_at_the_same_position_count_once(self):
+        """Found on this building: an interior partition traced twice,
+        exactly on top of itself. One snap target, not two."""
+        a = Edge(Vector(10.0, 0.0), Vector(10.0, 8.0))
+        b = Edge(Vector(10.0, 0.0), Vector(10.0, 8.0))
+        plan = PlanSketch("FirstFP Sketch", extra=[a, b])
+        found = [sub for p, sub in self.find([plan]) if p is plan]
+        self.assertEqual(sorted(s for s in found if s in ("Edge5", "Edge6")),
+                         ["Edge5"])
+
+    def test_a_bare_vertex_with_no_qualifying_edge_is_offered(self):
+        """A jog where the facade's own wall changes offset -- a corner in
+        the plan, not a T-intersection -- has no edge of its own to stand in
+        for it, so the point itself is offered instead."""
+        plan = PlanSketch("FirstFP Sketch")
+        # the rectangle's 4 edges contribute 8 vertex entries (2 per edge,
+        # undeduplicated -- see PlanSketch/Shape); this is the 9th
+        plan.Shape.Vertexes.append(Vertex(Vector(16.3, 0.0)))
+        found = self.find([plan])
+        self.assertIn((plan, "Vertex9"), found)
+
+    def test_a_vertex_already_covered_by_an_added_edge_is_not_duplicated(self):
+        """The same point, reachable both as an interior wall's endpoint and
+        as a bare vertex, is one reference, not two."""
+        interior = Edge(Vector(10.0, 0.0), Vector(10.0, 8.0))
+        plan = PlanSketch("FirstFP Sketch", extra=[interior])
+        found = self.find([plan])
+        subs = [sub for p, sub in found if p is plan]
+        vertex_subs = [s for s in subs if s.startswith("Vertex")]
+
+        def at_1000(sub):
+            pt = plan.Shape.Vertexes[int(sub[6:]) - 1].Point
+            return abs(pt.x - 10.0) < 1e-6 and abs(pt.y - 0.0) < 1e-6
+
+        self.assertFalse(any(at_1000(s) for s in vertex_subs))
+
+    def test_searches_every_plan_sketch_given(self):
+        """A tall facade spans more than one storey, so more than one plan
+        sketch can touch its plane -- found on this building: "Openings
+        South" reads from both Level 1 and Level 2."""
+        upper = PlanSketch.__new__(PlanSketch)
+        upper.Label, upper.OS_Elevation = "SecondFP Sketch", Length(3.38)
+        # a real second storey sits at its own global z, not z=0 like the
+        # ground floor -- without that, its wall line would land exactly on
+        # top of the ground floor's and be deduplicated away as the same run
+        corners = [Vector(0, 0, 3380), Vector(50, 0, 3380),
+                  Vector(50, 18, 3380), Vector(0, 18, 3380)]
+        upper.Shape = Shape([Edge(corners[i], corners[(i + 1) % 4])
+                            for i in range(4)])
+        found = self.find([self.plan, upper])
+        self.assertTrue(any(p is upper for p, _sub in found))
+
+    def test_a_sketch_with_no_shape_is_skipped(self):
+        empty = PlanSketch.__new__(PlanSketch)
+        empty.Label, empty.OS_Elevation, empty.Shape = ("Empty",
+                                                        Length(0.0), None)
+        found = self.find([empty, self.plan])
+        self.assertTrue(any(p is self.plan for p, _sub in found))
+
+
+class AddIntersectingGeometryTests(unittest.TestCase):
+    """add_intersecting_geometry against a fake sketch -- additive and
+    idempotent, the same contract add_plan_edge already keeps."""
+
+    def test_new_crossings_are_added(self):
+        interior = Edge(Vector(10.0, 0.0), Vector(10.0, 8.0))
+        plan = PlanSketch("FirstFP Sketch", extra=[interior])
+        plan.Name = "Sketch"
+        sketch = RefSketch([])
+        added = fso.add_intersecting_geometry(
+            sketch, [plan], group((0, -1, 0), 0.0), None)
+        self.assertEqual(added, 4)               # 3 rectangle sides touch
+                                                  # y=0 (not the far one) +
+                                                  # the interior wall
+        self.assertEqual(len(fso.external_refs(sketch)), 4)
+
+    def test_rerunning_adds_nothing_new(self):
+        interior = Edge(Vector(10.0, 0.0), Vector(10.0, 8.0))
+        plan = PlanSketch("FirstFP Sketch", extra=[interior])
+        plan.Name = "Sketch"
+        sketch = RefSketch([])
+        fso.add_intersecting_geometry(sketch, [plan],
+                                      group((0, -1, 0), 0.0), None)
+        again = fso.add_intersecting_geometry(sketch, [plan],
+                                              group((0, -1, 0), 0.0), None)
+        self.assertEqual(again, 0)
+
+    def test_a_refused_reference_does_not_abandon_the_rest(self):
+        plan = PlanSketch("FirstFP Sketch")
+        plan.Name = "Sketch"
+        sketch = RefSketch([], fail=True)
+        added = fso.add_intersecting_geometry(
+            sketch, [plan], group((0, -1, 0), 0.0), None)
+        self.assertEqual(added, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

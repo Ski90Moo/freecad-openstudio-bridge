@@ -43,6 +43,14 @@ runs/
 # Timestamped backups written beside an edited document.
 *.bak-*
 
+# markup/crop_plan.py's and markup/crop_elevations.py's output -- crops of
+# whatever private PDF/TIFF you pointed them at, same reasoning as the
+# *.pdf rule above. --out-dir defaults to markup/plans and markup/elevations
+# respectively, but a custom one (markup/elevations05, one per document) is
+# still an output directory and still private.
+/markup/plans*/
+/markup/elevations*/
+
 # Editors and OS
 .vscode/
 .idea/

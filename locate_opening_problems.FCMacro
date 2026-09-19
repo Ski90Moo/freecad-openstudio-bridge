@@ -1,0 +1,150 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the FreeCAD-OpenStudio bridge contributors
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.  See LICENSE for the full text.
+
+# Select, in the 3D view, every wire fc_export_openings.py would refuse.
+#
+# Run from inside FreeCAD (Macro -> Macros... -> Execute) with the document
+# open.  Nothing is written -- this only selects and frames geometry so a
+# problem wire can be found without matching a printed coordinate by eye.
+#
+# The export's own report numbers wires (one closed loop = one opening) but
+# FreeCAD's status bar and Elements panel number the sketch's *flat* edge
+# list instead -- two different index spaces that happen to agree only by
+# coincidence.  "wire 14" in a printed report is not "Edge14" in the GUI.
+# This macro closes that gap by finding, for each problem wire, which
+# Edge<N> its edges actually are, and selecting those.
+#
+# Two problems are checked, the same two ways classify_document() would:
+#   - a wire that is not closed (an open outline can never become an
+#     opening);
+#   - a closed wire with no host -- tried flat against the wall it sits on,
+#     then projected along the drawing's normal for a wall set back from it,
+#     exactly as the real export tries both before giving up.
+# One implementation of "is this wire a problem" (fc_export_openings.py's
+# own find_host/project_host), so this can never disagree with what the
+# export would refuse.
+
+import os
+import sys
+
+import FreeCAD
+
+try:
+    import FreeCADGui
+except ImportError:  # pragma: no cover - only reachable headless
+    FreeCADGui = None
+
+CANDIDATES = [folder for folder in (
+    os.path.dirname(os.path.abspath(__file__)),
+    os.environ.get("FREECAD_BRIDGE", ""),
+) if folder]
+
+
+def load_bridge():
+    for folder in CANDIDATES:
+        if os.path.exists(os.path.join(folder, "fc_export_openings.py")):
+            if folder not in sys.path:
+                sys.path.insert(0, folder)
+            import fc_export_openings
+            return fc_export_openings
+    return None
+
+
+def _edge_key(edge):
+    """Order-independent endpoint identity, to match a Shape.Wires edge back
+    to its index in the flat Shape.Edges list -- the two numberings are not
+    the same, and FreeCAD's selection API only understands the flat one."""
+    a, b = edge.Vertexes[0].Point, edge.Vertexes[1].Point
+    return tuple(sorted([(round(a.x, 1), round(a.y, 1), round(a.z, 1)),
+                          (round(b.x, 1), round(b.y, 1), round(b.z, 1))]))
+
+
+def is_opening_sketch(obj, classify_label):
+    return obj.TypeId == "Sketcher::SketchObject" and \
+        (bool(getattr(obj, "OS_OpeningSketch", False)) or
+         classify_label(obj.Label)[0])
+
+
+def wire_problem(obj, wire, hosts, exporter):
+    """None, or why fc_export_openings.py would refuse this wire."""
+    if not wire.isClosed():
+        return "not a closed outline"
+    points = [v.Point for v in wire.OrderedVertexes]
+    found, why = exporter.find_host(points, hosts)
+    if found is not None:
+        return None
+    normal, certain = exporter.drawing_normal(obj, points)
+    if normal is not None:
+        found, _moved, _offset, gone = exporter.project_host(
+            points, hosts, normal, certain)
+        if found is not None:
+            return None
+        why = "%s, %s" % (why, gone)
+    return why
+
+
+def run():
+    doc = FreeCAD.ActiveDocument
+    if doc is None or FreeCADGui is None:
+        FreeCAD.Console.PrintError(
+            "No active document, or not running inside the GUI.\n")
+        return
+
+    exporter = load_bridge()
+    if exporter is None:
+        FreeCAD.Console.PrintError(
+            "Could not find fc_export_openings.py.  Looked in:\n  %s\n"
+            % "\n  ".join(CANDIDATES))
+        return
+
+    hosts = exporter.host_surfaces(doc)
+    FreeCADGui.Selection.clearSelection()
+
+    found = []
+    for obj in doc.Objects:
+        if not is_opening_sketch(obj, exporter.classify_label):
+            continue
+        shape = getattr(obj, "Shape", None)
+        if shape is None:
+            continue
+
+        by_key = {}
+        for i, edge in enumerate(shape.Edges, start=1):
+            by_key.setdefault(_edge_key(edge), []).append(i)
+
+        for w, wire in enumerate(shape.Wires, start=1):
+            why = wire_problem(obj, wire, hosts, exporter)
+            if why is None:
+                continue
+            edge_nums = []
+            for edge in wire.Edges:
+                candidates = by_key.get(_edge_key(edge))
+                if candidates:
+                    edge_nums.append(candidates.pop(0))
+            for n in edge_nums:
+                FreeCADGui.Selection.addSelection(doc.Name, obj.Name,
+                                                   "Edge%d" % n)
+            found.append((obj.Label, w, why, edge_nums))
+
+    if not found:
+        FreeCAD.Console.PrintMessage(
+            "Nothing to locate -- every wire in every opening sketch is "
+            "closed and hosted.\n")
+        return
+
+    FreeCAD.Console.PrintMessage("Selected %d problem wire(s):\n" % len(found))
+    for label, w, why, edge_nums in found:
+        FreeCAD.Console.PrintMessage(
+            "  %-16s wire %-3d %s\n    -> %s\n"
+            % (label, w, why,
+               ", ".join("Edge%d" % n for n in edge_nums) or "(no edges?)"))
+
+    FreeCADGui.SendMsgToActiveView("ViewSelection")
+
+
+run()

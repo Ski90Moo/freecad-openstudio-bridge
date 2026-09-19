@@ -104,6 +104,37 @@ class StoryTests(unittest.TestCase):
                          0.0)
 
 
+class StackElevationTests(unittest.TestCase):
+
+    def test_two_stories_derive_elevation_and_spacing(self):
+        derived = fb.stack_elevations_m({"Sketch": 0.0, "Sketch001": 3378.2})
+        self.assertEqual(set(derived), {"Sketch", "Sketch001"})
+        elevation, floor_to_floor = derived["Sketch"]
+        self.assertAlmostEqual(elevation, 0.0)
+        self.assertAlmostEqual(floor_to_floor, 3.3782)
+
+    def test_topmost_story_has_no_floor_to_floor(self):
+        derived = fb.stack_elevations_m({"Sketch": 0.0, "Sketch001": 3378.2})
+        elevation, floor_to_floor = derived["Sketch001"]
+        self.assertAlmostEqual(elevation, 3.3782)
+        self.assertIsNone(floor_to_floor)
+
+    def test_order_in_the_input_does_not_matter(self):
+        derived = fb.stack_elevations_m(
+            {"Top": 6756.4, "Bottom": 0.0, "Middle": 3378.2})
+        self.assertAlmostEqual(derived["Bottom"][1], 3.3782)
+        self.assertAlmostEqual(derived["Middle"][1], 3.3782)
+        self.assertIsNone(derived["Top"][1])
+
+    def test_side_by_side_layout_derives_nothing(self):
+        """Every sketch at the same Z -- Placement carries no elevation."""
+        self.assertEqual(fb.stack_elevations_m({"Sketch": 0.0,
+                                                  "Sketch001": 0.0}), {})
+
+    def test_a_single_sketch_derives_nothing(self):
+        self.assertEqual(fb.stack_elevations_m({"Sketch": 0.0}), {})
+
+
 class RoomHeightTests(unittest.TestCase):
 
     def test_an_override_reads_in_metres(self):

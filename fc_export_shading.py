@@ -90,12 +90,52 @@ VERTICAL_TOL = 1e-3
 
 
 def classify_label(label):
-    """('Canopy', 'South entry') from 'CANOPY South entry', else (None, '')."""
+    """('Canopy', 'South entry') from 'CANOPY South entry', else (None, '').
+
+    The keyword also matches as a whole word anywhere in the label, not only
+    as a prefix -- 'Parapet Shading' reads as 'Shading' the same as 'SHADING
+    Parapet' does, just without a suffix to split off (there is no reliable
+    place to cut the label, so the second element comes back empty).
+    """
     upper = (label or "").upper()
     for keyword, kind in KINDS:
         if upper.startswith(keyword):
             return kind, (label[len(keyword):] or "").strip(" -_:")
+    words = re.findall(r"[A-Z0-9]+", upper)
+    for keyword, kind in KINDS:
+        if keyword in words:
+            return kind, ""
     return None, ""
+
+
+# Whether a sketch that does not otherwise read as a shade should be treated
+# as one anyway.  Seeded by fc_seed_labels.py --init-shading on every sketch
+# that could plausibly hold one, the same way OS_RoofMethod is offered on
+# every roof candidate: added, left at whatever the label already implies,
+# and never decided for you beyond that.
+SHADING_SKETCH_PROP = "OS_ShadingSketch"
+
+
+def ensure_shading_props(obj):
+    """Add OS_ShadingSketch to an object if missing.
+
+    Starts ticked when the label already reads as a shade -- classify_label
+    would have picked it up anyway, so the checkbox should say so rather than
+    show unticked next to a sketch that is already live.  Otherwise starts
+    unticked: an opt-in, not a guess.  Returns True when the property was
+    added; the caller decides whether to save.
+    """
+    if hasattr(obj, SHADING_SKETCH_PROP):
+        return False
+    obj.addProperty("App::PropertyBool", SHADING_SKETCH_PROP, "OpenStudio",
+                    "Include every closed wire in this sketch as a shading "
+                    "surface")
+    obj.OS_ShadingSketch = bool(classify_label(obj.Label)[0])
+    try:
+        obj.purgeTouched()
+    except AttributeError:              # pragma: no cover - old FreeCAD
+        pass
+    return True
 
 
 def dumps_compact_vertices(payload):

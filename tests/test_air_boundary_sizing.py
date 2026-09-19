@@ -401,6 +401,173 @@ class TestSolidOverride(unittest.TestCase):
         self.assertEqual(dropped, [])
 
 
+class MockOptional:
+    def __init__(self, value=None):
+        self._value = value
+
+    def is_initialized(self):
+        return self._value is not None
+
+    def get(self):
+        return self._value
+
+
+class MockSpace:
+    def __init__(self, name):
+        self._name = name
+
+    def nameString(self):
+        return self._name
+
+
+class MockPoint3d:
+    def __init__(self, z):
+        self._z = z
+
+    def z(self):
+        return self._z
+
+
+class MockSurface:
+    """Just enough of openstudio.model.Surface for promote_declared."""
+
+    def __init__(self, name, space, area=10.0, kind="Wall", height=3.0):
+        self._name = name
+        self._space = space
+        self._adjacent = MockOptional(None)
+        self._area = area
+        self._kind = kind
+        self._boundary = "Outdoors"
+        self._height = height
+
+    def nameString(self):
+        return self._name
+
+    def space(self):
+        return MockOptional(self._space)
+
+    def adjacentSurface(self):
+        return self._adjacent
+
+    def grossArea(self):
+        return self._area
+
+    def surfaceType(self):
+        return self._kind
+
+    def outsideBoundaryCondition(self):
+        return self._boundary
+
+    def vertices(self):
+        return [MockPoint3d(0.0), MockPoint3d(self._height)]
+
+
+def pair_up(a, b):
+    """Make two mock surfaces each other's interior partner."""
+    a._adjacent, b._adjacent = MockOptional(b), MockOptional(a)
+    a._boundary = b._boundary = "Surface"
+
+
+class MockModel:
+    def __init__(self, surfaces):
+        self._surfaces = surfaces
+
+    def getSurfaces(self):
+        return self._surfaces
+
+
+class PromoteDeclaredTests(unittest.TestCase):
+    """--open-surface has to agree with itself, not just with the rules.
+
+    promote_declared looked up each name's covering construction from a dict
+    built once, before the loop, from the rule-derived openings only -- so
+    two declared surfaces sharing a pair no rule had covered each minted
+    their own "declared" (kind, space_a, space_b), and group_pairs (keyed on
+    that exact triple) gave the pair two constructions.  Measured on
+    FloorplanTest-04: `--open-surface "Surface 77,Surface 147"`, both on
+    004-101-LobbyReception <-> 026-S1-Stair, came back as "Air Boundary -
+    Opening 101 to S1" and "Air Boundary - Opening S1 to 101 - Level 2" --
+    apply_air_boundaries.py's own zone-pair guard caught it and refused to
+    write the model, rather than double the mixing silently.
+    """
+
+    def test_two_declared_surfaces_on_a_new_pair_share_one_construction(self):
+        lobby, stair = MockSpace("004-101-LobbyReception"), \
+            MockSpace("026-S1-Stair")
+        a1, a2 = MockSurface("Surface 77", lobby), \
+            MockSurface("Surface 146", stair)
+        pair_up(a1, a2)
+        b1, b2 = MockSurface("Surface 147", stair), \
+            MockSurface("Surface 78", lobby)
+        pair_up(b1, b2)
+        model = MockModel([a1, a2, b1, b2])
+
+        found, problems = fab.promote_declared(
+            model, [], {"Surface 77", "Surface 147"})
+
+        self.assertEqual(problems, [])
+        self.assertEqual(len(found), 2)
+        keys = {(op["kind"], op["space_a"], op["space_b"]) for op in found}
+        self.assertEqual(len(keys), 1,
+                         "both surfaces must resolve to the same (kind, "
+                         "space_a, space_b) or group_pairs makes two "
+                         "constructions out of one pair: %s" % keys)
+
+    def test_naming_the_other_face_first_still_merges(self):
+        """Order must not matter: which face is named first, or which of
+        mine/theirs a surface happens to be, is not a decision to make
+        twice."""
+        corridor = MockSpace("001-HALL-1-Corridor")
+        lobby = MockSpace("004-101-LobbyReception")
+        a1, a2 = MockSurface("Surface 21", corridor), \
+            MockSurface("Surface 82", lobby)
+        pair_up(a1, a2)
+        b1, b2 = MockSurface("Surface 15", lobby), \
+            MockSurface("Surface 89", corridor)
+        pair_up(b1, b2)
+        model = MockModel([a1, a2, b1, b2])
+
+        found, problems = fab.promote_declared(
+            model, [], {"Surface 21", "Surface 89"})
+
+        self.assertEqual(problems, [])
+        keys = {(op["kind"], op["space_a"], op["space_b"]) for op in found}
+        self.assertEqual(len(keys), 1, keys)
+
+    def test_a_declared_surface_joins_an_existing_rule_derived_pair(self):
+        """Pre-existing behaviour, still correct once the lookup updates as
+        it goes: a declared surface on a pair a rule already covers joins
+        that rule's construction rather than starting a new one."""
+        rule_op = {"kind": "mezzanine", "space_a": "Room A",
+                  "space_b": "Room B",
+                  "surface_a": "Surface 1", "surface_b": "Surface 2"}
+        s = MockSurface("Surface 9", MockSpace("Room B"))
+        partner = MockSurface("Surface 10", MockSpace("Room A"))
+        pair_up(s, partner)
+        model = MockModel([s, partner])
+
+        found, problems = fab.promote_declared(model, [rule_op], {"Surface 9"})
+
+        self.assertEqual(problems, [])
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["kind"], "mezzanine")
+        self.assertEqual(found[0]["space_a"], "Room A")
+        self.assertEqual(found[0]["space_b"], "Room B")
+
+    def test_an_unclaimed_surface_still_stands_alone(self):
+        room_a, room_b = MockSpace("Room A"), MockSpace("Room B")
+        s1, s2 = MockSurface("Surface 1", room_a), \
+            MockSurface("Surface 2", room_b)
+        pair_up(s1, s2)
+        model = MockModel([s1, s2])
+
+        found, problems = fab.promote_declared(model, [], {"Surface 1"})
+
+        self.assertEqual(problems, [])
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["kind"], "declared")
+
+
 # The model to check these invariants against.  BRIDGE_TEST_OSM is how CI
 # points them at the one it just built from samples/ -- without it these tests
 # could only ever run on the machine that happens to have a model at the path

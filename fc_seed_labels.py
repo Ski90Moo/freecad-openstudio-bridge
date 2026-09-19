@@ -13,11 +13,22 @@ Two jobs, both idempotent:
   --init-stories   add the OS_StoryName / OS_Elevation / OS_FloorToFloor /
                    OS_Include properties to every sketch, and OS_NorthAxis_deg
                    to the document, so they can be filled in from the GUI.
+                   When the sketches are stacked at real Z (Placement.Base.z
+                   differs between them), OS_Elevation and OS_FloorToFloor
+                   are derived from that spacing instead -- the topmost
+                   story's OS_FloorToFloor still has to be entered by hand,
+                   since there is no story above it to measure against.
 
   --init-roof      add OS_RoofMethod to every solid or face that could be a
                    roof, so one can be picked from the dropdown in the Data
                    tab.  Nothing is chosen for you; every candidate starts at
                    Ignore.
+
+  --init-shading   add the OS_ShadingSketch checkbox to every sketch that
+                   could plausibly hold a shade, so a sketch whose Label
+                   does not already read as one can still be included.
+                   Starts ticked where the label already reads as a shade,
+                   unticked everywhere else.
 
   (default)        drop a placeholder Draft Text into every enclosed region
                    that has no label yet, so the rooms can be named in the GUI
@@ -39,6 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import FreeCAD  # noqa: E402
 import Draft  # noqa: E402
 import fc_roof  # noqa: E402
+import fc_export_shading as fc_shading  # noqa: E402
 import fcbridge as fb  # noqa: E402
 
 PLACEHOLDER_PREFIX = "??"
@@ -83,7 +95,8 @@ def init_stories(doc):
         changed = True
         print("document: added OS_NorthAxis_deg (currently 0.0)")
 
-    for sketch in fb.all_sketches(doc):
+    sketches = fb.all_sketches(doc)
+    for sketch in sketches:
         if fb.ensure_story_props(sketch):
             changed = True
             if not sketch.OS_StoryName:
@@ -96,7 +109,28 @@ def init_stories(doc):
         else:
             print("  %-12s already has OS_* properties (OS_Include=%s)"
                   % (sketch.Name, sketch.OS_Include))
-    return changed
+
+    derived = fb.stack_elevations_m(
+        {sketch.Name: sketch.Placement.Base.z for sketch in sketches})
+    stacked = bool(derived)
+    if derived:
+        print("\nstacked layout detected -- deriving OS_Elevation and "
+              "OS_FloorToFloor from Placement.Base.z:")
+        for sketch in sketches:
+            elevation_m, floor_to_floor_m = derived[sketch.Name]
+            if fb.story_elevation_m(sketch) != elevation_m:
+                sketch.OS_Elevation = elevation_m * fb.MM_PER_M
+                changed = True
+            line = "  %-12s Placement.z=%9.1f mm -> OS_Elevation=%.3f m" % (
+                sketch.Name, sketch.Placement.Base.z, elevation_m)
+            if floor_to_floor_m is None:
+                print(line + "  (topmost -- set OS_FloorToFloor by hand)")
+                continue
+            if fb.story_height_m(sketch) != floor_to_floor_m:
+                sketch.OS_FloorToFloor = floor_to_floor_m * fb.MM_PER_M
+                changed = True
+            print(line + "  OS_FloorToFloor=%.3f m" % floor_to_floor_m)
+    return changed, stacked
 
 
 def init_roof(doc):
@@ -127,6 +161,44 @@ def init_roof(doc):
                  len(shape.Faces),
                  "   (added)" if added else "   OS_RoofMethod=%s"
                  % getattr(obj, fc_roof.METHOD_PROP, "?")))
+    return changed
+
+
+def init_shading(doc):
+    """Offer OS_ShadingSketch on every sketch that could plausibly be a shade.
+
+    Skipped: story plan sketches (OS_Include) and opening-tracing sketches
+    (OS_OpeningSketch) -- ticking either would turn every room or opening
+    outline it holds into a phantom shading surface -- and any sketch used as
+    a solid's own profile (a roof body's sketch, say), found the same way
+    fc_export_shading's own identity join does, via InList.
+    """
+    candidates = []
+    for obj in doc.Objects:
+        if obj.TypeId != "Sketcher::SketchObject":
+            continue
+        if hasattr(obj, fc_shading.SHADING_SKETCH_PROP):
+            candidates.append(obj)
+            continue
+        if hasattr(obj, "OS_Include") or getattr(obj, "OS_OpeningSketch", False):
+            continue
+        if any(o.isDerivedFrom("PartDesign::Feature") for o in obj.InList):
+            continue
+        candidates.append(obj)
+
+    if not candidates:
+        print("no sketches in this document to offer as shading.")
+        return False
+
+    changed = False
+    for obj in candidates:
+        added = fc_shading.ensure_shading_props(obj)
+        changed = changed or added
+        if added:
+            state = "(added, ticked)" if obj.OS_ShadingSketch else "(added)"
+        else:
+            state = "OS_ShadingSketch=%s" % obj.OS_ShadingSketch
+        print("  %-24s %s" % (obj.Label[:24], state))
     return changed
 
 
@@ -169,7 +241,7 @@ def seed(doc, height_mm):
                 ["%s | Room %d (%.1f m2)"
                  % (PLACEHOLDER_PREFIX, n, fb.area_m2(face))],
                 pt)
-            text.Label = "%s R%02d" % (story_name, n)
+            fb.sync_label_display(text)
             # text.ViewObject is None in a headless session, so the font size
             # is recorded on the document instead -- see ensure_doc_props.
             group.addObject(text)
@@ -186,6 +258,9 @@ def main():
                     help="add the OS_* story properties and exit")
     ap.add_argument("--init-roof", action="store_true",
                     help="add OS_RoofMethod to every roof candidate and exit")
+    ap.add_argument("--init-shading", action="store_true",
+                    help="add OS_ShadingSketch to every shading candidate "
+                         "and exit")
     ap.add_argument("--font-mm", type=float, default=DEFAULT_FONT_MM,
                     help="label text height in mm, recorded on the document "
                          "for label_style.FCMacro (default %d)"
@@ -211,17 +286,37 @@ def main():
             print("\nevery candidate already has OS_RoofMethod.")
         return
 
-    if args.init_stories:
-        changed = init_stories(doc)
+    if args.init_shading:
+        changed = init_shading(doc)
         if changed and not args.dry_run:
             backup_once(path)
             fb.save_document(doc)
-            print("\nsaved.  Now set OS_Elevation, OS_FloorToFloor and "
-                  "tick OS_Include\non each story sketch (Data tab, "
-                  "OpenStudio group), then re-run without\n--init-stories to "
-                  "seed room labels.\nBoth are lengths: type them with a unit "
-                  "(8ft 10-11/16in, 2710 mm), or bind\nthem to a spreadsheet "
-                  "cell that has one.")
+            print("\nsaved.  Tick OS_ShadingSketch (Data tab, OpenStudio "
+                  "group) on anything\nthat should be a shade but is not "
+                  "already ticked, then re-run the export.")
+        elif not changed:
+            print("\nevery candidate already has OS_ShadingSketch.")
+        return
+
+    if args.init_stories:
+        changed, stacked = init_stories(doc)
+        if changed and not args.dry_run:
+            backup_once(path)
+            fb.save_document(doc)
+            if stacked:
+                print("\nsaved.  OS_Elevation and OS_FloorToFloor were "
+                      "derived from Placement.Base.z above.\nCheck the "
+                      "topmost story's OS_FloorToFloor by hand, tick "
+                      "OS_Include on each story\nsketch (Data tab, "
+                      "OpenStudio group), then re-run without --init-stories "
+                      "to\nseed room labels.")
+            else:
+                print("\nsaved.  Now set OS_Elevation, OS_FloorToFloor and "
+                      "tick OS_Include\non each story sketch (Data tab, "
+                      "OpenStudio group), then re-run without\n--init-stories "
+                      "to seed room labels.\nBoth are lengths: type them "
+                      "with a unit (8ft 10-11/16in, 2710 mm), or bind\nthem "
+                      "to a spreadsheet cell that has one.")
         elif not changed:
             print("\nnothing to add.")
         return

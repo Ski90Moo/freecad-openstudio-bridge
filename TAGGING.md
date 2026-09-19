@@ -452,16 +452,29 @@ of one, so it is drawn in **plan**, on a sketch whose z is the height of the
 plate. The drawing is then the shading surface itself: true footprint, true
 height, nothing to project and no host to find.
 
-Tag the sketch by **starting its Label with a keyword**, or by adding an
-`OS_ShadingSketch` boolean:
+Tag the sketch by **giving its Label a keyword** — as the first word
+(`CANOPY South entry`) or anywhere else in it (`Parapet Shading`) — or by
+ticking an `OS_ShadingSketch` boolean:
 
-| Label starts with | Named |
+| Label contains | Named |
 |---|---|
 | `CANOPY` | Canopy |
 | `AWNING` | Awning |
 | `OVERHANG` | Overhang |
 | `FIN` | Fin |
 | `SHADING` / `SHADE` | Shading |
+
+```
+.\bridge.ps1 seed YourPlan.FCStd --init-shading
+```
+
+adds the `OS_ShadingSketch` checkbox to every sketch that could plausibly
+hold a shade, the same way `--init-roof` offers `OS_RoofMethod` on every roof
+candidate: nothing is decided for you, but the checkbox is there to tick.
+It starts **ticked** on a sketch whose label already reads as a shade (it was
+already being picked up; the box just says so) and **unticked** everywhere
+else. Story plan and opening-tracing sketches are left alone — ticking either
+would turn every room or opening outline inside it into a phantom shade.
 
 Every **closed** wire in the sketch is one shading surface. The rest of the
 name comes from the nearest exterior wall — `Canopy South 01` — by the same

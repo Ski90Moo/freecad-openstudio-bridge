@@ -267,6 +267,32 @@ def story_height_m(sketch):
     return 3.0 if value is None else value
 
 
+def stack_elevations_m(placements_mm):
+    """Elevation and floor-to-floor derived from real stacked placement.
+
+    ``placements_mm`` maps an arbitrary key (a sketch name) to that sketch's
+    ``Placement.Base.z`` in millimetres. Returns ``{key: (elevation_m,
+    floor_to_floor_m)}`` for every key, sorted low to high, with
+    ``floor_to_floor_m`` ``None`` for the topmost story -- there is no story
+    above it to measure the spacing against, so that one still has to be
+    entered by hand.
+
+    Returns ``{}`` when every sketch sits at the same Z. That is the
+    side-by-side layout (README "Stories may sit side by side or be
+    stacked"), where Placement carries no elevation information at all.
+    """
+    if len(set(placements_mm.values())) <= 1:
+        return {}
+    ordered = sorted(placements_mm.items(), key=lambda kv: kv[1])
+    result = {}
+    for i, (key, z_mm) in enumerate(ordered):
+        floor_to_floor_m = None
+        if i + 1 < len(ordered):
+            floor_to_floor_m = (ordered[i + 1][1] - z_mm) / MM_PER_M
+        result[key] = (z_mm / MM_PER_M, floor_to_floor_m)
+    return result
+
+
 def ensure_story_props(sketch):
     """Add the OS_* story properties to a sketch if they are missing.
 
@@ -735,6 +761,23 @@ def parse_label_text(label):
     if m:
         return m.group(1).strip(), m.group(2).strip()
     return "", first
+
+
+def sync_label_display(label):
+    """Make the tree Label read the same as the drawn Text.
+
+    A fresh label gets an auto-numbered Label ("Level 1 R06") because there
+    is nothing else to call it yet.  Nothing downstream reads Label for room
+    identity -- parse_label_text and is_room_label both work from Text -- so
+    once a room is renamed, leaving the old auto-numbered Label behind is
+    pure cost: the object becomes unfindable in the tree by anything but
+    scrolling.  Mirroring Text here is free.  Returns True when it changed.
+    """
+    lines = [s.strip() for s in (label.Text or []) if s and s.strip()]
+    if not lines or label.Label == lines[0]:
+        return False
+    label.Label = lines[0]
+    return True
 
 
 SKIP_TOKENS = ("SKIP", "-", "OPEN TO BELOW", "OPENTOBELOW", "NOTASPACE")

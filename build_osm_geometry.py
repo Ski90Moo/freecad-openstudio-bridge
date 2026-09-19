@@ -130,7 +130,7 @@ def point3d_vector(vertices):
     return pts
 
 
-def space_from_solid(model, solid):
+def space_from_solid(model, solid, registry=None):
     """A space built surface by surface, for anything a prism cannot say.
 
     fromFloorPrint can only make a flat-topped box.  A space whose ceiling
@@ -142,6 +142,12 @@ def space_from_solid(model, solid):
     the type FreeCAD recorded is not imposed here -- it is compared, and any
     disagreement handed back, because the two disagreeing means one of them
     has the winding wrong and that is not something to paper over.
+
+    A surface carrying a match_id -- an attic floor piece and the room
+    ceiling it mirrors, minted together by fc_roof.py's mirror_ceiling --
+    is recorded into `registry` under that id, so apply_known_adjacencies
+    can pair the two once every space exists.  See that function for why
+    this has to happen before intersectSurfaces runs, not after.
     """
     space = openstudio.model.Space(model)
     mismatches = []
@@ -152,19 +158,47 @@ def space_from_solid(model, solid):
         if surface.surfaceType() != spec["type"]:
             mismatches.append((surface.nameString(), spec["type"],
                                surface.surfaceType()))
+        match_id = spec.get("match_id")
+        if match_id and registry is not None:
+            registry.setdefault(match_id, []).append(surface)
     return space, mismatches
 
 
-def create_space(model, spec, story_spec):
+def create_space(model, spec, story_spec, registry=None):
     """(space, mismatches) -- the one place a space comes into existence."""
     solid = spec.get("solid")
     if solid:
-        return space_from_solid(model, solid)
+        return space_from_solid(model, solid, registry)
 
     pts = make_floor_print(spec["vertices"], story_spec["elevation_m"])
     built = openstudio.model.Space.fromFloorPrint(
         pts, space_height(spec, story_spec), model)
     return (built.get() if built.is_initialized() else None), []
+
+
+def apply_known_adjacencies(registry):
+    """Pair surfaces the plan already knows are the same physical boundary.
+
+    Set before intersectSurfaces/matchSurfaces run, not after: those calls
+    still refragment an already-perfectly-mirrored pair when reconciling
+    many spaces at once.  Measured on this bridge's own test building: 13
+    clean attic-floor pieces, each already the exact mirror of the room
+    ceiling it belongs to, came back as 31 pieces -- 30 of them with a
+    spurious diagonal edge nothing in the plan drew -- purely from being
+    present in a 36-space intersectSurfaces call.  The same 13 pairs, told
+    to OpenStudio directly first, survive that call untouched: it does not
+    re-examine a surface that already has an adjacent one.
+
+    Returns how many pairs were set.
+    """
+    paired = 0
+    for surfaces in registry.values():
+        if len(surfaces) != 2:
+            continue
+        a, b = surfaces
+        a.setAdjacentSurface(b)
+        paired += 1
+    return paired
 
 
 def build(plan, existing_map):
@@ -176,6 +210,7 @@ def build(plan, existing_map):
 
     fcmap, problems, below_grade, overrides = {}, [], [], []
     zone_seq = 0
+    adjacency_registry = {}
 
     for story_spec in plan["stories"]:
         story = openstudio.model.BuildingStory(model)
@@ -197,7 +232,8 @@ def build(plan, existing_map):
                 sanitize(spec["name"]) or "Space")
             zone_name = prior.get("zone_name") or "Zone %s" % space_name
 
-            space, mismatches = create_space(model, spec, story_spec)
+            space, mismatches = create_space(model, spec, story_spec,
+                                             adjacency_registry)
             if space is None:
                 problems.append("fromFloorPrint failed for %r (%d vertices)"
                                 % (spec["name"], len(spec["vertices"])))
@@ -238,15 +274,19 @@ def build(plan, existing_map):
             if spec.get("solid"):
                 fcmap[spec["id"]]["roof"] = spec["solid"]["source"]
 
+    paired = apply_known_adjacencies(adjacency_registry)
+
     # getSpaces() hands back a tuple; these two want a real SpaceVector.
     spaces = openstudio.model.SpaceVector()
     for space in model.getSpaces():
         spaces.append(space)
     openstudio.model.intersectSurfaces(spaces)
     openstudio.model.matchSurfaces(spaces)
+    resynced = resync_matched_surfaces(spaces)
     duplicates = drop_duplicate_surfaces(model)
 
-    return model, fcmap, problems, below_grade, overrides, duplicates
+    return (model, fcmap, problems, below_grade, overrides, duplicates,
+            resynced, paired)
 
 
 def drop_duplicate_surfaces(model):
@@ -285,6 +325,52 @@ def drop_duplicate_surfaces(model):
                                 len(surface.subSurfaces())))
                 surface.remove()
     return removed
+
+
+def resync_matched_surfaces(spaces):
+    """Force a matched surface pair to share bit-identical vertices.
+
+    intersectSurfaces splits a large surface -- an attic floor spanning many
+    rooms -- against each smaller one it borders, and matchSurfaces then
+    pairs the resulting pieces up.  Both are OpenStudio's own geometry
+    kernel, and neither guarantees reproducing the same point twice to the
+    last bit: measured on an attic floor whose input was already
+    bit-identical on the room side, the matched attic-floor piece still came
+    back 0.08 mm off.  FreeCAD's own drawability check fails below that --
+    0.005 mm -- so a room that genuinely reaches its attic can still come
+    back as an outline that will not draw a face, with no error from
+    OpenStudio anywhere.
+
+    One side's vertices are copied onto the other, reversed to match the
+    winding a matched interior surface always has; which side is arbitrary,
+    since they are only ever supposed to be the same polygon seen from
+    opposite spaces.  Returns how many pairs were resynced.
+    """
+    seen, resynced = set(), 0
+    for space in spaces:
+        for surface in space.surfaces():
+            partner = surface.adjacentSurface()
+            if not partner.is_initialized():
+                continue
+            partner = partner.get()
+            pair_key = tuple(sorted((surface.nameString(),
+                                     partner.nameString())))
+            if pair_key in seen:
+                continue
+            seen.add(pair_key)
+
+            mine = [(round(v.x(), 9), round(v.y(), 9), round(v.z(), 9))
+                   for v in surface.vertices()]
+            theirs = [(round(v.x(), 9), round(v.y(), 9), round(v.z(), 9))
+                     for v in partner.vertices()]
+            if theirs == list(reversed(mine)):
+                continue
+
+            mirrored = openstudio.Point3dVector(
+                [openstudio.Point3d(x, y, z) for x, y, z in reversed(mine)])
+            if partner.setVertices(mirrored):
+                resynced += 1
+    return resynced
 
 
 def apply_ground_boundaries(model, space_names):
@@ -359,8 +445,15 @@ def main():
         print("reusing %d name(s) from %s"
               % (len(existing), os.path.basename(fcmap_path)))
 
-    model, fcmap, problems, below_grade, overrides, duplicates = build(
-        plan, existing)
+    model, fcmap, problems, below_grade, overrides, duplicates, resynced, \
+        paired = build(plan, existing)
+
+    if paired:
+        print("paired %d surface(s) the plan already knew were the same "
+              "boundary, before intersectSurfaces ran" % paired)
+    if resynced:
+        print("resynced %d matched surface pair(s) intersectSurfaces left "
+              "a hair apart" % resynced)
 
     if duplicates:
         print("removed %d surface(s) intersectSurfaces emitted twice:"

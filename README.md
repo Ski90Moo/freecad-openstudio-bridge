@@ -87,7 +87,7 @@ along so `schema/floorplan.schema.json` can be checked against a real exported
 plan rather than only read — a schema nothing validates against is decoration.
 `requirements-elevations.txt` adds the PDF-reading extras for `elevations/`.
 
-Run the tests — 302 of them, no FreeCAD or drawing needed for all but a few:
+Run the tests — 340 of them, no FreeCAD or drawing needed for all but a few:
 
 ```
 osvenv/Scripts/python.exe -m unittest discover -s tests
@@ -163,6 +163,7 @@ kept so the exchange format can be read without running anything at all.
 | [IDENTITY.md](IDENTITY.md) | How the bridge knows a room is the same room after the plan moves |
 | [FreeCAD-FAQ.md](FreeCAD-FAQ.md) | FreeCAD behaviours that bite while tracing |
 | [elevations/README.md](elevations/README.md) | Optional: reading openings out of a PDF drawing set |
+| [markup/README.md](markup/README.md) | v1/prototype: seeding a new document's floor plans from a purple-annotated drawing set, instead of placing the reference image by hand |
 | [samples/](samples/) | The worked example drawing, and a real `surfaces.json` and `openings.json` |
 
 ## Licence
@@ -244,6 +245,17 @@ label ties, and containment decides as before.
 The exporter reports footprints that appear identically on more than one story
 — stairwells, shafts, chases. If two stories share **none**, they are almost
 certainly misaligned and you get a warning.
+
+**Stacked, `--init-stories` derives `OS_Elevation` and `OS_FloorToFloor` from
+that same `Placement.Base.z` instead of leaving them at their defaults** — the
+spacing between two stacked sketches is exactly a floor-to-floor height, so
+typing it in twice (once by drawing, once by hand into a property) is a
+duplication with nothing checking the two agree. The topmost story still needs
+`OS_FloorToFloor` set by hand, since there is no story above it to measure
+against. Re-running `--init-stories` re-derives both from wherever the
+sketches currently sit, so nudging a stacked sketch and re-running keeps them
+honest. Side by side, every sketch is at `z = 0` and there is nothing to
+derive — both stay manual, as before.
 
 ### 4. One Draft Text label inside every room
 
@@ -718,13 +730,34 @@ same roofed model afterwards moves **nothing**.
 references to the model inside a sketch that has to depend only on the
 drawing, and to the one kind of geometry `import` replaces outright. On this
 document 114 of them supported just 12 constraints. What goes in now is the
-traced wall centerline the sketch is already attached to, so what you snap to
-and what the sketch stands on cannot come apart.
+traced wall centerline the sketch is already attached to, plus every other
+point the plan's wall network touches that same plane at — another wall
+running *along* it (a distinct run sharing the line, never the same one
+retraced), and every interior wall that only *crosses* it, T-intersecting the
+exterior wall from inside the building. So what you snap to and what the
+sketch stands on cannot come apart, and a door that should line up with an
+interior partition has that partition's own centerline to snap to, not just
+the facade's.
 
-Only that one edge, not every plan edge in the plane. Measured on
-FloorplanTest-02: seven plan edges lie in the south plane — the envelope line
-plus the per-tenant walls drawn along it — and three more on the storey above.
-Ten overlapping references are nine ambiguous snap targets.
+That second kind — a wall crossing the plane rather than running along it —
+projects into the elevation as a point, not a line, because it has no extent
+in the elevation's own two axes once you're looking straight at the facade
+from outside. FreeCAD's own projection draws that distinction from the edge's
+real 3D direction; nothing here classifies it first. This is exactly the two
+ways the Sketcher's own External geometry tool were used by hand on this
+building's "Openings South" before this followed suit: **G, X** on an edge
+that shares the plane, **G, I** on one that only crosses it.
+
+This is narrower than "every plan edge in the plane" sounds, and deliberately
+so. Measured on FloorplanTest-02: seven plan edges lie in the south plane —
+the envelope line plus the per-tenant walls drawn along it, which is not one
+edge but several *overlapping* retraces of the same run — and three more on
+the storey above; ten overlapping references would have been nine ambiguous
+snap targets. What is offered is deduplicated by position first, so two edges
+traced exactly on top of each other (found on this building: a duplicated
+interior partition) still count once. A wall-network vertex on the plane with
+no edge of its own to represent it — a jog where the facade's own wall
+changes offset, not a T-intersection — is offered too, as a bare point.
 
 `--no-external` skips the projection (the sketch is still *attached* to that
 line; you just get nothing to snap to). `--keep-external` leaves existing
@@ -1038,16 +1071,24 @@ places a facade drawing, trace each canopy as a closed rectangle, and:
 .\bridge.ps1 apply-shading runs\fptest02.osm shading.json
 ```
 
-A sketch is a shading sketch when its **Label starts with a keyword**, or when
-it carries an `OS_ShadingSketch` boolean. The keyword also sets the name:
+A sketch is a shading sketch when its **Label contains a keyword** — as the
+first word (`CANOPY South entry`) or anywhere else (`Parapet Shading`) — or
+when it carries a ticked `OS_ShadingSketch` boolean. A label match also sets
+the name:
 
-| Label starts with | named |
+| Label contains | named |
 |---|---|
 | `CANOPY` | Canopy |
 | `AWNING` | Awning |
 | `OVERHANG` | Overhang |
 | `FIN` | Fin |
 | `SHADING` / `SHADE` | Shading |
+
+`.\bridge.ps1 seed YourPlan.FCStd --init-shading` adds the `OS_ShadingSketch`
+checkbox (Data tab, OpenStudio group) to every sketch that could plausibly
+hold a shade — ticked already where the label matches, unticked everywhere
+else — the same way `--init-roof` offers `OS_RoofMethod` on every roof
+candidate without deciding for you.
 
 Every closed wire in the sketch is one shading surface, exactly as in an
 opening sketch. The facade in the name comes from the nearest exterior wall —
@@ -1159,8 +1200,8 @@ its own right, on a story of its own (`OS_StoryName`, default `Attic`). Name it
 with `OS_SpaceName` in the usual `NUMBER | Name` form; left blank, the object's
 label supplies it, minus FreeCAD's `-001` copy suffix.
 
-The rooms below keep their flat ceilings, and `matchSurfaces` pairs them with
-the attic floor — so what was 923 m² of exterior roof becomes 923 m² of
+The rooms below keep their flat ceilings, and the attic gets a matching floor
+over each one — so what was 923 m² of exterior roof becomes 923 m² of
 interior ceiling, and the loss path now runs through the attic. **Give the
 attic a construction set and decide whether it is conditioned**; nothing else
 in the model will remind you.
@@ -1168,6 +1209,27 @@ in the model will remind you.
 An attic carries an `OS_SpaceId` exactly as a room label does, so it is the
 same kind of thing to the change-propagation machinery: rename it, re-pitch it,
 and it stays the same space.
+
+**The attic's own floor is built directly, not left for `matchSurfaces` to
+discover.** Each carved room's ceiling is mirrored into a Floor piece on the
+attic side — same points, reversed, nothing computed — and whatever the
+carved rooms do not tile is recovered by real 2D polygon subtraction against
+the attic's own footprint, so an eave overhang or a void nothing claims still
+gets a floor rather than a hole.
+
+Each mirrored pair is then told to OpenStudio directly, with
+`setAdjacentSurface`, **before** `intersectSurfaces`/`matchSurfaces` run over
+the model — and that ordering is load-bearing, not a nicety. Handing
+OpenStudio two already-identical surfaces is not enough on its own:
+reconciling one large attic against many small room ceilings at once,
+`intersectSurfaces` still refragmented 13 already-correct, already-mirrored
+pairs into 31 pieces, 30 of them carrying a spurious diagonal edge that
+matches nothing drawn in the plan — confirmed against SketchUp's own
+`intersect_with`, run over the identical geometry, which produces the clean
+13-piece result every time. Pairing the surfaces first stops
+`intersectSurfaces` from re-examining them at all: it does not re-split a
+surface that already has an adjacent one, so the same 13 pairs survive the
+call untouched.
 
 #### Both are checked before they are written
 
@@ -1369,6 +1431,25 @@ longer contains are removed, and only ones it has never seen are created:
 
 ```
 added 0, updated 28 in place, removed 0
+```
+
+**The host wall named in the openings JSON is checked, never trusted.**
+Surface names are positional, not identity — the same problem `Surface 263`
+causes for air boundaries (§5a) — so a host name recorded at export time can
+point at a completely different wall after a full rebuild renumbers
+everything. The named host is tried first, geometrically: the outline's
+points must lie in the surface's own plane and inside its own polygon, which
+is cheap and almost always still correct. Only when that fails does it fall
+back to searching every surface in the model for the one the outline actually
+fits, and it refuses rather than guesses when nothing fits or more than one
+does. Measured after a full rebuild of a 36-space building: every one of 28
+openings had a stale name — one door's claimed host was 15 m outside its own
+bounds — and every one was re-matched to its real wall with zero ambiguous
+fits:
+
+```
+28 opening(s) had a stale host name and were re-matched geometrically:
+  OverheadDoor South 07   Surface 149 -> Surface 117
 ```
 
 That is not cosmetic. A handle is what a shading control, a frame and divider
@@ -1639,12 +1720,17 @@ says so once and does not block.
 | `subsurface_focus.FCMacro` | FreeCAD GUI | make openings the only thing the cursor can pick |
 | `tag_opening.FCMacro` | FreeCAD GUI | pin an opening's type to the outline, overruling the classifier |
 | `review_openings.FCMacro` | FreeCAD GUI | preview what every drawn opening would become, without exporting |
+| `locate_opening_problems.FCMacro` | FreeCAD GUI | select every wire the openings export would refuse, in the 3D view |
 | `review_roof.FCMacro` | FreeCAD GUI | preview what the roof would do to the model, without exporting |
 | `restore_view_data.py` | plain python | repair a document that lost its view data |
 | `verify_roundtrip.py` | FreeCAD | FCStd vs surfaces JSON, vertex for vertex |
 | `fc_seed_openings.py` | FreeCAD | an attached, pre-referenced elevation sketch per facade |
 | `elevations/facade_images.py` | venv | cut the elevation sheet into one registered image per facade |
 | `fc_place_elevations.py` | FreeCAD | put those images on their walls at exact scale |
+| `markup/read_markup.py` | venv | read a sheet's crosshair + dimension calibration markup out of a PDF's `/Annots` |
+| `markup/crop_plan.py` | venv | crop each story's floor plan off the raster sheet at exact scale, from that markup |
+| `markup/crop_elevations.py` | venv | the same, for the elevation sheet's four facade drawings, each calibrated by its own crosshair |
+| `fc_seed_floorplan.py` | FreeCAD | create/update a document with each story's calibrated image + empty sketch, stacked at the right elevation |
 | `fc_export_openings.py` | FreeCAD | drawn outlines → openings JSON |
 | `apply_openings.py` | venv | openings JSON → subsurfaces on the .osm |
 | `fc_export_shading.py` | FreeCAD | drawn canopies and fins → shading JSON |

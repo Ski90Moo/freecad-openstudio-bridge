@@ -206,6 +206,77 @@ parametrically linked — it updates if the source solid's geometry changes.
 
 ---
 
+## Crashes and troubleshooting
+
+**Q: After working in FreeCAD for a while (several documents open, image
+planes with large floor plan/elevation images), the images stop rendering,
+and reopening the document logs an access violation — is the document
+corrupted?**
+Usually not. Each `Image::ImagePlane` doesn't render its embedded PNG
+directly — on every document open, FreeCAD extracts the embedded image into
+a per-session temp cache folder
+(`%LOCALAPPDATA%\Temp\FreeCAD\v1-1\Cache\FreeCAD_Doc_<uid>_<session>\`) and
+the 3D view loads the texture from there. With several large image planes in
+one document (e.g. six ~5000×2160px PNGs), this is a plausible trigger for a
+Coin3D/GPU texture-loading fault — an access violation inside
+`GUIApplication::notify`, caught rather than fatal — which is a known weak
+spot in FreeCAD's 3D view, not a sign of a broken `.FCStd`. Confirm by
+opening the document **headlessly** (script access, not the GUI) and
+checking the embedded PNGs extract cleanly with correct byte sizes and valid
+PNG headers — if they do, the file itself is fine.
+
+**Q: Could two documents that reference similar images (e.g.
+FloorplanTest-04 and FloorplanTest-05) be colliding in the same temp cache
+and corrupting each other's textures?**
+No — ruled out. Each document gets its own **UUID-scoped** cache folder
+(`FreeCAD_Doc_<document-Uid>_<session>\`), baked into the extraction path
+from that document's own `Uid` property. Two documents can never land in the
+same folder even when both are open at once and reference identically-named
+image files. Confirmed by comparing each document's `Uid` against its actual
+cache folder name — they matched, one-to-one, no overlap.
+
+**Q: What actually fixes it?**
+Fully quit FreeCAD and relaunch — but confirm via Task Manager that the
+process is actually gone first. A "close and reopen" attempted from within
+an already-crashed/hung session may not fully cycle the process, so the
+stale state survives. The real cause looks like state accumulating inside
+one long-running FreeCAD session (leftover cache folders going back many
+days, never cleaned up, is consistent with stale/exhausted GPU texture
+memory or a leaked Coin3D node) rather than anything wrong with the file —
+a genuinely fresh process clears it.
+
+If a clean restart alone doesn't fix it, also try: **Edit → Preferences →
+Display → 3D View → uncheck "Use OpenGL VBO"** — the standard workaround for
+this class of Coin3D texture crash.
+
+**Q: I keep getting "Access violation - no RTTI data!" and the geometry and
+images disappear, recurring more each time I keep working — same issue as
+above?**
+Related, but a different root cause: **hybrid graphics** (an NVIDIA GPU
+alongside Intel integrated graphics, common on laptops). This specific error
+text shows up when Windows switches which GPU is driving FreeCAD mid-session
+— a power-state change, thermal throttling, plugging/unplugging power or an
+external display. Coin3D's OpenGL scene graph loses its type registry when
+the rendering context gets torn down out from under it, and everything drawn
+through it (images, geometry) blanks out while FreeCAD's exception guard
+catches the error and limps along instead of hard-crashing — which is also
+why it escalates (more errors the longer you keep working) rather than
+being a one-off: every further interaction throws more of the same broken
+context, and it doesn't recover on its own.
+
+To confirm: check Windows' own crash log (Event Viewer / WER). No fresh
+crash-report entry for the incident is consistent with FreeCAD's exception
+guard catching it before Windows ever sees a real crash — the GPU-context
+theory, not a one-off native bug.
+
+**Fix:** pin FreeCAD to one GPU explicitly instead of letting Windows decide:
+- **Settings → System → Display → Graphics → Add** the FreeCAD executable
+  (e.g. `C:\Program Files\FreeCAD 1.1\bin\freecad.exe`).
+- Set it to **High performance** (forces the dedicated GPU, not the
+  integrated one) — applies every launch, no auto-switching mid-session.
+
+---
+
 ## Settings worth turning on
 
 **Report View auto-open for macros:** Edit → Preferences → General → Report

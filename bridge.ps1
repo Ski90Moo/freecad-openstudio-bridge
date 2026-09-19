@@ -13,7 +13,7 @@ param(
     [ValidateSet('seed', 'relabel', 'export', 'build', 'dump', 'import',
                  'verify', 'planes', 'crop', 'elevations', 'openings',
                  'apply', 'shading', 'apply-shading', 'air-boundaries',
-                 'apply-air-boundaries', 'update')]
+                 'apply-air-boundaries', 'update', 'markup-crop', 'markup-place')]
     [string]$Command,
 
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -44,6 +44,8 @@ $scripts = @{
     'air-boundaries' = @{ py = 'venv'; file = 'find_air_boundaries.py' }
     'apply-air-boundaries' = @{ py = 'venv'; file = 'apply_air_boundaries.py' }
     update   = @{ py = 'venv';    file = 'update_osm_geometry.py' }
+    'markup-crop'  = @{ py = 'venv';    file = 'markup\crop_plan.py' }
+    'markup-place' = @{ py = 'freecad'; file = 'fc_seed_floorplan.py' }
 }
 
 $spec = $scripts[$Command]

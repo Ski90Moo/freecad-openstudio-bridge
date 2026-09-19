@@ -53,8 +53,10 @@ import openstudio
 import surface_identity
 
 from build_osm_geometry import (FCMAP_VERSION, SUPPORTED_SCHEMAS,
-                                create_space, drop_duplicate_surfaces,
-                                sanitize, space_height, vertex_hash)
+                                apply_known_adjacencies, create_space,
+                                drop_duplicate_surfaces,
+                                resync_matched_surfaces, sanitize,
+                                space_height, vertex_hash)
 
 
 def load_model(path):
@@ -195,7 +197,8 @@ def repair_exposed(surfaces, model, repaired):
     return repaired
 
 
-def rebuild_space(model, old_space, story_spec, space_spec, name, zone):
+def rebuild_space(model, old_space, story_spec, space_spec, name, zone,
+                  registry=None):
     """Replace a space's geometry, keeping its name and thermal zone.
 
     The ThermalZone object itself is never touched, so everything connected to
@@ -208,7 +211,7 @@ def rebuild_space(model, old_space, story_spec, space_spec, name, zone):
             space_type = old_space.spaceType().get()
         old_space.remove()
 
-    space, _mismatches = create_space(model, space_spec, story_spec)
+    space, _mismatches = create_space(model, space_spec, story_spec, registry)
     if space is None:
         return None
     space.setName(name)
@@ -449,6 +452,7 @@ def main():
 
     touched, problems, orphans = [], [], []
     repaired, dropped = [], []
+    adjacency_registry = {}
 
     for space_id in removed:
         entry = fcmap[space_id]
@@ -483,7 +487,7 @@ def main():
         old = spaces_by_name.get(entry["space_name"])
         zone = zones_by_name.get(entry["zone_name"])
         space = rebuild_space(model, old, story_spec, space_spec,
-                              entry["space_name"], zone)
+                              entry["space_name"], zone, adjacency_registry)
         if space is None:
             problems.append("rebuild failed for %s" % entry["space_name"])
             continue
@@ -540,7 +544,8 @@ def main():
         next_seq += 1
         zone = openstudio.model.ThermalZone(model)
         zone.setName("Zone %s" % name)
-        space = rebuild_space(model, None, story_spec, space_spec, name, zone)
+        space = rebuild_space(model, None, story_spec, space_spec, name, zone,
+                              adjacency_registry)
         if space is None:
             problems.append("could not create %s" % name)
             continue
@@ -571,11 +576,20 @@ def main():
         if any(overlaps(box, tb) for tb in touched_boxes):
             affected.append(space)
 
+    paired = apply_known_adjacencies(adjacency_registry)
+    resynced = 0
     if len(affected) > 1:
         openstudio.model.intersectSurfaces(affected)
         openstudio.model.matchSurfaces(affected)
+        resynced = resync_matched_surfaces(affected)
+    if paired:
+        print("\npaired %d surface(s) the plan already knew were the same "
+              "boundary, before intersectSurfaces ran" % paired)
     print("\nre-matched %d space(s) (%d rebuilt + neighbours)"
           % (len(affected), len(touched)))
+    if resynced:
+        print("  resynced %d matched surface pair(s) intersectSurfaces "
+              "left a hair apart" % resynced)
 
     for space_name, surface_name, area, subs in drop_duplicate_surfaces(model):
         print("  removed duplicate %-14s from %-30s %8.3f m2%s"

@@ -70,6 +70,82 @@ def to_space_frame(space, vertices):
     return space.transformation().inverse() * pts
 
 
+# Same tolerances fc_export_openings.py's own find_host uses, so apply
+# recognises exactly what export would have drawn the outline onto.
+COPLANAR_TOL_M = 0.001
+INSIDE_TOL_M = 0.001
+
+
+def signed_area_2d(pts):
+    total = 0.0
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i].x(), pts[i].y()
+        x2, y2 = pts[(i + 1) % n].x(), pts[(i + 1) % n].y()
+        total += x1 * y2 - x2 * y1
+    return total / 2.0
+
+
+def fits_host(vertices_building, surface):
+    """True when this outline is coplanar with, and inside, this surface.
+
+    Tested in the surface's own space frame -- coordinates only line up with
+    a surface's plane and polygon there, not in building coordinates.
+
+    pointInPolygon needs both flattened onto z = 0 (alignFace does that; a
+    surface's own frame is planar but not z = 0) and wound clockwise, which
+    alignFace does not guarantee -- it mirrors whatever winding the surface
+    already has, and a surface's winding is whichever way its outward
+    normal makes it, not a fixed convention.  Reversed here rather than
+    trusted, since taking that on faith once already put an opening
+    outside its wall with no error from anything.
+    """
+    space = surface.space()
+    if not space.is_initialized():
+        return False
+    pts = to_space_frame(space.get(), vertices_building)
+    plane = surface.plane()
+    if not all(plane.pointOnPlane(p, COPLANAR_TOL_M) for p in pts):
+        return False
+
+    align = openstudio.Transformation.alignFace(surface.vertices())
+    flat = align.inverse()
+    host_poly = list(flat * surface.vertices())
+    if signed_area_2d(host_poly) > 0:
+        host_poly = list(reversed(host_poly))
+    host_poly = openstudio.Point3dVector(host_poly)
+
+    return all(openstudio.pointInPolygon(p, host_poly, INSIDE_TOL_M)
+              for p in flat * pts)
+
+
+def find_host(vertices_building, named_host, surfaces):
+    """The host this outline actually belongs to, geometrically.
+
+    Mirrors fc_export_openings.py's own find_host: an outline belongs to
+    whichever surface it is coplanar with and inside, never to a name.  The
+    saved host_surface is tried first -- when it still fits, nothing about
+    the model has to change to confirm it -- but a stale name (surface
+    numbers are not stable across a full rebuild) is not trusted just
+    because it resolves; the same geometric test is what decides.
+
+    Returns (host, is_fallback, problem).  problem is set, and host is
+    None, when nothing fits or more than one surface does -- an opening
+    floating off its wall is a silent-wrong-answer risk, so this fails
+    loudly rather than guessing.
+    """
+    if named_host is not None and fits_host(vertices_building, named_host):
+        return named_host, False, None
+
+    matches = [s for s in surfaces if fits_host(vertices_building, s)]
+    if len(matches) == 1:
+        return matches[0], True, None
+    if not matches:
+        return None, True, "no surface in the model is coplanar with and contains it"
+    names = ", ".join(s.nameString() for s in matches[:4])
+    return None, True, "sits inside %d surfaces (%s)" % (len(matches), names)
+
+
 def orient_like(pts, host_normal):
     """Match the host surface's facing, reversing the loop if needed.
 
@@ -187,20 +263,40 @@ def main():
     if args.keep_existing:
         keyed, unkeyed = {}, []
 
+    # Resolved once, up front, so the diff below previews the same host the
+    # apply loop will actually use -- not the saved name, which a full
+    # rebuild can leave pointing at an unrelated surface.  See find_host.
+    by_name = {s.nameString(): s for s in model.getSurfaces()}
+    all_surfaces = list(model.getSurfaces())
+    resolved, refound = [], []
+    for spec in data["openings"]:
+        named_host = by_name.get(spec["host_surface"])
+        host, is_fallback, problem = find_host(
+            spec["vertices"], named_host, all_surfaces)
+        resolved.append((host, problem))
+        if is_fallback and host is not None:
+            refound.append((spec["name"], spec["host_surface"],
+                            host.nameString()))
+
     # The diff, before anything is touched.  An architectural revision moves
     # windows and widens doors as surely as it moves walls, and "updated 28 in
     # place" says nothing about which ones.
     before_state = snapshot(keyed)
     after_state = {}
-    for spec in data["openings"]:
-        if spec.get("id"):
+    for spec, (host, problem) in zip(data["openings"], resolved):
+        if spec.get("id") and host is not None:
             after_state[spec["id"]] = {
                 "name": spec["name"], "type": spec["subsurface_type"],
-                "host": spec["host_surface"],
+                "host": host.nameString(),
                 "vertices": [tuple(v) for v in spec["vertices"]]}
     changes = opening_diff.diff(before_state, after_state)
     for line in opening_diff.report(changes):
         print(line)
+    if refound:
+        print("\n%d opening(s) had a stale host name and were re-matched "
+              "geometrically:" % len(refound))
+        for name, was, now in refound:
+            print("  %-24s %s -> %s" % (name, was, now))
     print("")
     if args.report:
         # A report is a success, not a failure: exit 0 like update does.
@@ -224,18 +320,15 @@ def main():
     for opening_id, sub in keyed.items():
         sub.setName("freecad-bridge-parked-%s" % opening_id)
 
-    surfaces = {s.nameString(): s for s in model.getSurfaces()}
     orphans = adoptable(model)
     added = updated = 0
     adopted = []
     problems = []
     seen = set()
 
-    for spec in data["openings"]:
-        host = surfaces.get(spec["host_surface"])
-        if host is None:
-            problems.append("%s: host surface %r is not in the model"
-                            % (spec["name"], spec["host_surface"]))
+    for spec, (host, problem) in zip(data["openings"], resolved):
+        if problem:
+            problems.append("%s: %s" % (spec["name"], problem))
             continue
 
         space = host.space()
@@ -251,7 +344,7 @@ def main():
 
         adopted_this = False
         if sub is None:
-            key = outline_key(spec["host_surface"], spec["vertices"])
+            key = outline_key(host.nameString(), spec["vertices"])
             sub = orphans.pop(key, None)
             if sub is not None:
                 adopted_this = True
@@ -268,7 +361,7 @@ def main():
             if not sub.setSurface(host):
                 problems.append(
                     "%s: OpenStudio rejected moving it to %s"
-                    % (spec["name"], spec["host_surface"]))
+                    % (spec["name"], host.nameString()))
                 continue
             if not sub.setVertices(pts):
                 problems.append("%s: OpenStudio rejected the new outline"
@@ -291,7 +384,7 @@ def main():
             sub.remove()
             problems.append(
                 "%s: OpenStudio rejected it on %s -- check it is coplanar with "
-                "and inside the wall" % (spec["name"], spec["host_surface"]))
+                "and inside the wall" % (spec["name"], host.nameString()))
             continue
         if not sub.setSubSurfaceType(spec["subsurface_type"]):
             problems.append("%s: could not set type %r"

@@ -317,6 +317,70 @@ class AtticBaseTests(unittest.TestCase):
         self.assertFalse(reaches)
 
 
+class SuspectTopMismatchTests(unittest.TestCase):
+    """The 3/8" version of the attic-base failure: two *different* tops.
+
+    attic_base snaps the attic to the one nearest story top and says
+    nothing about the rest.  A double-height room whose OS_Height was typed
+    by hand from a rounded floor-to-floor figure computes a top a few
+    millimetres off the real one -- close enough that a person reading the
+    plan would call it the same line, far enough that matchSurfaces pairs
+    nothing and the room is left facing Ground.
+    """
+
+    def test_an_off_by_a_fraction_of_an_inch_top_is_reported(self):
+        # 6.091 from the real stack (3.384 + 2.707); 6.102 hand-typed from a
+        # rounded 2.718 -- an 11 mm gap, the shape of the reported bug.
+        tops_at = {6.091: ["Level 2/Office"],
+                   6.102: ["Level 1/Lobby", "Level 1/Shop"]}
+        rows = fc_roof.suspect_top_mismatches(tops_at, 6.091)
+        self.assertEqual(len(rows), 1)
+        top, gap, rooms = rows[0]
+        self.assertEqual(top, 6.102)
+        self.assertAlmostEqual(gap, 0.011, 9)
+        self.assertEqual(rooms, ["Level 1/Lobby", "Level 1/Shop"])
+
+    def test_the_chosen_target_itself_is_not_reported(self):
+        tops_at = {6.091: ["Level 2/Office"]}
+        self.assertEqual(fc_roof.suspect_top_mismatches(tops_at, 6.091), [])
+
+    def test_a_top_far_from_the_target_is_not_a_suspect(self):
+        # A genuinely different ceiling -- a step, a clerestory -- is a
+        # design choice, not a typo, and stays quiet.
+        tops_at = {6.091: ["Level 2/Office"], 3.384: ["Level 1/Warehouse"]}
+        self.assertEqual(fc_roof.suspect_top_mismatches(tops_at, 6.091), [])
+
+    def test_the_tolerance_boundary_is_inclusive(self):
+        tops_at = {6.091: ["a"], 6.091 + fc_roof.BASE_TOL_M: ["b"]}
+        rows = fc_roof.suspect_top_mismatches(tops_at, 6.091)
+        self.assertEqual(len(rows), 1)
+
+    def test_nearest_gap_sorts_first(self):
+        tops_at = {6.091: ["target"], 6.10: ["far"], 6.093: ["near"]}
+        rows = fc_roof.suspect_top_mismatches(tops_at, 6.091)
+        self.assertEqual([r[2][0] for r in rows], ["near", "far"])
+
+    def test_a_tenth_of_a_millimetre_is_float_noise_not_a_typo(self):
+        # The same 6.091 m computed two ways -- a story's elevation +
+        # floor-to-floor, and a roof solid's own BRep geometry -- can differ
+        # in the last decimal with nobody having typed anything.  Real bug:
+        # 7 ordinary Level 2 rooms read 6.0909 against a 6.091 target.
+        tops_at = {6.091: ["Roof-matching room"],
+                   6.0909: ["Level 2/Stair2", "Level 2/Storage"]}
+        self.assertEqual(fc_roof.suspect_top_mismatches(tops_at, 6.091), [])
+
+    def test_the_noise_floor_boundary_is_exclusive(self):
+        # Exact float equality at the boundary itself is not meaningful to
+        # test -- 6.091 + NOISE_FLOOR_M is not bit-exact to 6.092 -- so this
+        # checks just inside and just outside it instead.
+        tops_at = {6.091: ["target"],
+                   6.0915: ["half a noise floor away"],
+                   6.0925: ["one and a half noise floors away"]}
+        rows = fc_roof.suspect_top_mismatches(tops_at, 6.091)
+        self.assertEqual([r[2][0] for r in rows],
+                         ["one and a half noise floors away"])
+
+
 class OutlineDriftTests(unittest.TestCase):
     """The guard on re-importing walls whose shape changed.
 

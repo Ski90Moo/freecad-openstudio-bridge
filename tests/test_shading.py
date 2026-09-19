@@ -130,6 +130,18 @@ class LabelTests(unittest.TestCase):
     def test_unrelated_label_is_not_a_shade(self):
         self.assertEqual(fx.classify_label("Openings South"), (None, ""))
 
+    def test_keyword_anywhere_in_the_label_still_matches(self):
+        self.assertEqual(fx.classify_label("Parapet Shading"),
+                         ("Shading", ""))
+
+    def test_keyword_as_a_substring_of_another_word_does_not_match(self):
+        # The anywhere-in-the-label fallback is whole-word: FIN must not fire
+        # on FINISH, nor SHADE on SHADED, when the keyword is not the prefix
+        # (a prefix match, e.g. 'Shaded Courtyard', is a separate, pre-existing
+        # rule this change does not touch).
+        self.assertEqual(fx.classify_label("Roof Finish Detail"), (None, ""))
+        self.assertEqual(fx.classify_label("South Shaded Zone"), (None, ""))
+
     def test_empty_label_is_safe(self):
         self.assertEqual(fx.classify_label(""), (None, ""))
 

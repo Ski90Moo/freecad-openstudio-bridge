@@ -111,8 +111,10 @@ def build_story(sketch, labels, sketches):
             "  %r has a floor-to-floor of %g m%s"
             % (story_name, story_height, hint))
 
-    spaces, minted, added_props, skipped, overrides = [], 0, 0, [], []
+    spaces, minted, added_props, relabeled, skipped, overrides = \
+        [], 0, 0, 0, [], []
     for face, label in pairs:
+        relabeled += 1 if fb.sync_label_display(label) else 0
         if fb.is_skip_label(label):
             skipped.append((label.Label, fb.area_m2(face)))
             continue
@@ -152,7 +154,8 @@ def build_story(sketch, labels, sketches):
         "source_sketch": sketch.Name,
         "spaces": spaces,
     }
-    return story, problems, orphans, minted, added_props, skipped, overrides
+    return (story, problems, orphans, minted, added_props, relabeled,
+            skipped, overrides)
 
 
 def report_roof(roof, notes):
@@ -251,14 +254,15 @@ def main():
     print("stories  : %d   labels: %d" % (len(sketches), len(labels)))
 
     stories, problems, skipped_all, overrides_all = [], [], [], []
-    minted_total = props_total = 0
+    minted_total = props_total = relabeled_total = 0
     for sketch in sketches:
-        (story, probs, _orphans, minted, added_props, skipped,
+        (story, probs, _orphans, minted, added_props, relabeled, skipped,
          overrides) = build_story(sketch, labels, sketches)
         stories.append(story)
         problems.extend(probs)
         minted_total += minted
         props_total += added_props
+        relabeled_total += relabeled
         skipped_all.extend(skipped)
         overrides_all.extend(overrides)
         print("  %-20s %3d rooms   elev %7.3f m   f2f %5.3f m%s"
@@ -316,13 +320,16 @@ def main():
             "  %d label(s) are not inside any room -- check placement"
             % (len(labels) - placed))
 
-    if minted_total or props_total:
+    if minted_total or props_total or relabeled_total:
         written = []
         if minted_total:
             written.append("minted %d new OS_SpaceId value(s)" % minted_total)
         if props_total:
             written.append("added %s to %d label(s)"
                            % (fb.HEIGHT_PROP, props_total))
+        if relabeled_total:
+            written.append("relabeled %d object(s) to match their drawn text"
+                           % relabeled_total)
         if args.no_write_ids:
             print("%s -- NOT saved (--no-write-ids)" % "; ".join(written))
         else:
@@ -352,14 +359,16 @@ def main():
         if not args.allow_problems:
             sys.exit(
                 "\nRefusing to write %s.\n"
-                "Every enclosed region must carry exactly one room label -- an "
-                "unlabeled\nregion is usually a corridor or a room that would "
-                "otherwise be silently\ndropped.\n"
-                "\nIf the walls just moved, the labels have not: run "
-                "fc_relabel.py, which\nputs each one back in its own room and "
-                "says so before it writes.  For a\nroom that is genuinely new, "
-                "fc_seed_labels.py places a placeholder.\nOr re-run with "
-                "--allow-problems to export anyway." % args.out
+                "Fix whichever of the problems above apply, or re-run with "
+                "--allow-problems\nto export anyway.\n"
+                "\nFor an unlabeled region: every enclosed region needs "
+                "exactly one room\nlabel -- an unlabeled region is usually a "
+                "corridor or a room that would\notherwise be silently "
+                "dropped.  If the walls just moved, the labels have\nnot: "
+                "run fc_relabel.py, which puts each one back in its own room "
+                "and says\nso before it writes.  For a room that is "
+                "genuinely new, fc_seed_labels.py\nplaces a placeholder."
+                % args.out
             )
 
     payload = {
