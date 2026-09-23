@@ -37,8 +37,19 @@ import openstudio
 FCMAP_VERSION = 1
 
 # 1 is a flat-topped plan; 2 may also carry a roof and the per-space
-# solids it produces.  Both build correctly here.
-SUPPORTED_SCHEMAS = (1, 2)
+# solids it produces; 3 may also carry air_boundary_overrides; 4 may also
+# give an ordinary (non-roofed) room a `solid` of its own, pre-split and
+# pre-paired from the wall-centerline network (fc_walls.py).  All four
+# build correctly here -- this module never reads air_boundary_overrides
+# itself, only find_air_boundaries.py does.
+SUPPORTED_SCHEMAS = (1, 2, 3, 4)
+
+# A `solid` used to mean "roofed" unconditionally -- fc_roof.py was the only
+# source of one.  Schema 4 also gives an ordinary room a `solid` (see
+# fc_walls.py), so anything that used spec.get("solid") as a stand-in for
+# "this room's height came from the roof, not a story override" has to
+# check the source instead.
+ROOF_SOLID_SOURCES = {"roof-extend", "roof-attic"}
 
 
 def sanitize(text):
@@ -255,8 +266,11 @@ def build(plan, existing_map):
             if elevation < 0:
                 below_grade.append(space.nameString())
             # A roofed space has no single top to report, and its height came
-            # from the roof rather than from anyone overriding a story.
-            if spec.get("height_m") and not spec.get("solid"):
+            # from the roof rather than from anyone overriding a story.  An
+            # ordinary room's own wall-network solid (schema 4) is not a
+            # roof, so it must not be excluded here the same way.
+            solid_source = (spec.get("solid") or {}).get("source")
+            if spec.get("height_m") and solid_source not in ROOF_SOLID_SOURCES:
                 overrides.append((space.nameString(),
                                   story_spec["floor_to_floor_m"], height,
                                   elevation + height))
@@ -271,8 +285,8 @@ def build(plan, existing_map):
                 "source_area_m2": spec["area_m2"],
                 "height_m": round(height, 6),
             }
-            if spec.get("solid"):
-                fcmap[spec["id"]]["roof"] = spec["solid"]["source"]
+            if solid_source:
+                fcmap[spec["id"]]["solid_source"] = solid_source
 
     paired = apply_known_adjacencies(adjacency_registry)
 
@@ -481,7 +495,8 @@ def main():
     roof = plan.get("roof")
     if roof:
         roofed = sum(1 for st in plan["stories"] for sp in st["spaces"]
-                     if sp.get("solid"))
+                     if (sp.get("solid") or {}).get("source")
+                     in ROOF_SOLID_SOURCES)
         print("roof        : %s, %d space(s) shaped by it"
               % (roof.get("method", "-"), roofed))
         for attic in roof.get("attics", []):

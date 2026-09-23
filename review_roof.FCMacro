@@ -31,7 +31,7 @@
 #   OS_RoofMethod = Ignore   nothing happens.  Every candidate starts here.
 #
 # If no object has the property yet, run:
-#     .\bridge.ps1 seed ..\FloorplanTest-02.FCStd --init-roof
+#     .\bridge.ps1 seed ..\FloorplanTest-05.FCStd --init-roof
 # or ask Claude to.  That puts the dropdown on every solid and face in the
 # document and leaves them all at Ignore.
 

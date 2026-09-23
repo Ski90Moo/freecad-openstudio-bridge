@@ -296,6 +296,78 @@ class RoundTripTests(unittest.TestCase):
         self.assertEqual(report["surfaces"], 0)
         self.assertTrue(report["notes"])
 
+    def test_an_inherited_construction_survives_a_defaulted_target(self):
+        """restore()'s orphan-rehome path checked
+        `not target.construction().is_initialized()` to decide a replacement
+        was unclaimed -- but on any model with a building-level
+        DefaultConstructionSet (every real model, once constructions are
+        assigned, unlike this module's own bare fixtures) that is True as
+        soon as ANY default resolves, whether or not something was
+        hard-assigned.  So an orphan's construction was never inherited on
+        a real model.  isConstructionDefaulted() is the right question:
+        True whenever nothing is hard-set, False once something genuinely
+        claims the surface -- both verified against a live model before
+        this test was written.
+        """
+        model = self.os.model.Model()
+        space = self.os.model.Space(model)
+        space.setName("Attic")
+
+        # A small flat fragment, as if intersectSurfaces had already split a
+        # flat roof into pieces -- the same shape ContainmentTests'
+        # test_plan_containment_ignores_pitch uses for the "plan" rehome
+        # mode, just captured through the real capture()/restore() path
+        # this time.
+        fragment = self.os.Point3dVector()
+        for x, y in ((0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)):
+            fragment.append(self.os.Point3d(x, y, 3.0))
+        roof = self.os.model.Surface(fragment, model)
+        roof.setSpace(space)
+        roof.setSurfaceType("RoofCeiling")
+        roof.setName("Flat Roof Fragment")
+        boundary = self.os.model.ConstructionAirBoundary(model)
+        boundary.setName("Air Boundary - roof test")
+        roof.setConstruction(boundary)
+
+        captured, ambiguous = self.si.capture(model, ["Attic"])
+        self.assertEqual(ambiguous, [])
+        roof.remove()
+
+        default_construction = self.os.model.Construction(model)
+        default_construction.setName("Default Roof")
+        surface_defaults = self.os.model.DefaultSurfaceConstructions(model)
+        surface_defaults.setRoofCeilingConstruction(default_construction)
+        construction_set = self.os.model.DefaultConstructionSet(model)
+        construction_set.setDefaultExteriorSurfaceConstructions(
+            surface_defaults)
+        model.getBuilding().setDefaultConstructionSet(construction_set)
+
+        # The replacement: one pitched face covering the whole 4x4
+        # footprint, not just the fragment's 2x2 corner -- not coplanar
+        # with the flat fragment, so this is the orphan/"plan" path, not a
+        # key match.
+        pitched = self.os.Point3dVector()
+        for x, y, z in ((0.0, 0.0, 3.0), (4.0, 0.0, 3.5),
+                        (4.0, 4.0, 3.5), (0.0, 4.0, 3.0)):
+            pitched.append(self.os.Point3d(x, y, z))
+        new_roof = self.os.model.Surface(pitched, model)
+        new_roof.setSpace(space)
+        new_roof.setSurfaceType("RoofCeiling")
+        new_roof.setName("Pitched Roof")
+
+        self.assertTrue(
+            new_roof.construction().is_initialized(),
+            "fixture must resolve a defaulted construction, or this test "
+            "does not exercise the bug")
+        self.assertTrue(new_roof.isConstructionDefaulted())
+
+        report = self.si.restore(model, captured, {"Attic": "Attic"})
+
+        self.assertEqual(report["inherited"], 1)
+        self.assertTrue(new_roof.construction().is_initialized())
+        self.assertEqual(new_roof.construction().get().nameString(),
+                         "Air Boundary - roof test")
+
 
 if __name__ == "__main__":
     unittest.main()

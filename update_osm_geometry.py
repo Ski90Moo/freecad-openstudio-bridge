@@ -52,7 +52,8 @@ import openstudio
 
 import surface_identity
 
-from build_osm_geometry import (FCMAP_VERSION, SUPPORTED_SCHEMAS,
+from build_osm_geometry import (FCMAP_VERSION, ROOF_SOLID_SOURCES,
+                                SUPPORTED_SCHEMAS,
                                 apply_known_adjacencies, create_space,
                                 drop_duplicate_surfaces,
                                 resync_matched_surfaces, sanitize,
@@ -263,6 +264,15 @@ def air_boundaries_at_risk(model, space_names):
     034-205-Mezzanine, which was hand-made, was lost in a roof rebuild, and
     was only found by diffing against a backup.
 
+    This is still the guard for that -- a hand-made coupling declared via a
+    FreeCAD tag (tag_airboundary.FCMacro) re-derives correctly through an
+    incremental --apply just like a rule-derived one does, because
+    surface_identity.restore() carries a construction forward by position
+    regardless of how it was assigned.  What a tag actually fixes is a
+    *full* build_osm_geometry.py rebuild, where every surface name changes
+    and --solid-surface / --open-surface have to be retyped by hand; this
+    function's warning is about exactly that risk, not made redundant by it.
+
     Returns {"space a <-> space b": (construction name, area m2, ach)}.
     """
     wanted = set(space_names)
@@ -388,14 +398,16 @@ def main():
         # A space reshaped by the roof keeps its footprint exactly, so the
         # area columns are identical and say nothing.  What moved is its top.
         note = ""
-        if space.get("solid"):
+        solid_source = (space.get("solid") or {}).get("source")
+        was_roofed = prior.get("solid_source") in ROOF_SOLID_SOURCES
+        if solid_source in ROOF_SOLID_SOURCES:
             roofed += 1
             tops = [v[2] for s in space["solid"]["surfaces"]
                     for v in s["vertices"]]
             note = ("   roof: top %s to %.3f m"
-                    % ("now" if prior.get("roof") else "flat, now",
+                    % ("now" if was_roofed else "flat, now",
                        max(tops)))
-        elif prior.get("roof"):
+        elif was_roofed:
             note = "   roof: no longer shaped by it, back to a flat top"
         print("  CHANGED  %-38s %.2f -> %.2f m2%s"
               % (prior["space_name"], prior["source_area_m2"],
@@ -503,9 +515,9 @@ def main():
         entry["room_number"] = space_spec["room_number"]
         entry["room_name"] = space_spec["name"]
         if space_spec.get("solid"):
-            entry["roof"] = space_spec["solid"]["source"]
+            entry["solid_source"] = space_spec["solid"]["source"]
         else:
-            entry.pop("roof", None)
+            entry.pop("solid_source", None)
         touched.append(space)
 
     # After the rebuilds, so a space that was both reshaped and relabelled
@@ -560,7 +572,7 @@ def main():
             "height_m": round(space_height(space_spec, story_spec), 6),
         }
         if space_spec.get("solid"):
-            fcmap[space_id]["roof"] = space_spec["solid"]["source"]
+            fcmap[space_id]["solid_source"] = space_spec["solid"]["source"]
         touched.append(space)
 
     # Intersect and match the touched spaces together with anything whose

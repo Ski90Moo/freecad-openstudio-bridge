@@ -11,7 +11,7 @@
 Run under FreeCAD's bundled Python:
 
     "C:/Program Files/FreeCAD 1.1/bin/python.exe" fc_seed_openings.py \
-        FloorplanTest-02.FCStd
+        FloorplanTest-05.FCStd
 
 Sketching fenestration by hand is only laborious because of the setup: finding
 the wall plane, orienting it, and projecting enough of the model into it to

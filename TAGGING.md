@@ -313,7 +313,7 @@ as an `OS_OpeningId` property. Nothing to set by hand; the first export after
 you draw an outline writes it, and says so:
 
 ```
-minted an id for 28 outline(s) and wrote them into FloorplanTest-02.FCStd
+minted an id for 28 outline(s) and wrote them into FloorplanTest-05.FCStd
   Revert in FreeCAD before editing it further.
 ```
 
@@ -445,7 +445,99 @@ reads the file as it was.
 
 ---
 
-## 5. Canopies and fins — a plan sketch, not an elevation one
+## 5. Air boundaries — a wall edge, not a face
+
+`find_air_boundaries.py` derives most air boundaries from the plan — shafts,
+mezzanine edges, corridor cross-sections, open-stair sides — but two things a
+floor plan never states outright: that a wall the rules would call a
+guardrail is in fact **rated construction**, or that an edge no rule reaches
+is **deliberately open**. Those used to live only as `--solid-surface` /
+`--open-surface`, naming an OpenStudio surface by name — and surface names
+are positional, reassigned on every full rebuild (see IDENTITY.md). A
+hand-made coupling was lost that way once, silently: the wall read solid, the
+model still built, and the two zones simply stopped exchanging air.
+
+`tag_airboundary.FCMacro` tags the declaration onto the drawing instead, the
+same way `tag_opening.FCMacro` overrides a window's type:
+
+1. **Edit the floor-plan sketch** the wall belongs to, and select its
+   wall-centerline **edge** — one edge, the segment between the two rooms it
+   separates (or between a room and an `Open to Below` void — see below).
+2. **Run the macro.** Pick `SOLID` (never an air boundary here, whatever a
+   rule says) or `OPEN` (always one), or `(no override)` to clear it.
+3. It prints what the edge resolves to right now — which two rooms, or why
+   not — before you have exported anything.
+
+| when | what you select |
+|---|---|
+| a rated wall a rule would open | its edge, `SOLID` |
+| an opening no rule reaches (a stair end, a doorway held open by design) | its edge, `OPEN` |
+
+The declaration rides on the edge itself as an `OS_AirBoundaryOverride`
+`Part::GeometryStringExtension` — document data, so it survives a save, a
+drag and a new constraint. `fc_export_floorplan.py` resolves it to the pair
+of rooms it separates (by their `OS_SpaceId`, never by name) and the edge's
+own line, and writes both into the floorplan JSON. `find_air_boundaries.py`
+then finds the built wall(s) for it **by that position**, not by name, which
+is what makes it survive a full rebuild with nothing to retype.
+
+An edge that touches the building's exterior, or the same room on both
+sides, or more than two rooms, is refused rather than guessed at — exactly
+like an opening outline that disagrees with itself — **but only for
+`OPEN`**. An air boundary is a construct between exactly two real zones,
+so `OPEN` demands that pairing exist; there is no other way to physically
+create one. `SOLID` makes no such demand — it declares "never an air
+boundary here," which is already true no matter how many rooms the edge
+borders, since no rule anywhere in this codebase would ever turn a
+non-two-room edge into an air boundary in the first place. A `SOLID` tag
+on an edge that does not cleanly separate two rooms (or one room and an
+`Open to Below` void) is silently accepted and resolves to nothing, rather
+than reported — it has nothing to protect against there, so refusing it
+would be an objection to a situation with no actual failure mode.
+
+**Run `normalize_walls.FCMacro` once per sketch before extensive tagging**
+(README §1a). A long wall crossing a T-junction resolves correctly either
+way — the tag lookup aggregates the fragments a T-junction splits its face
+boundary into — but if that run genuinely touches **three or more rooms**
+along its length (a wall separating a real corridor from several distinct
+offices, say), it is still refused *by design*: there is no single pair of
+rooms to write for it. Normalizing first turns that one long edge into
+several independently-taggable ones at the sketch's own T-junctions, so the
+fix is to tag each resulting edge on its own, not to change what the
+resolver accepts. Normalizing also fixes the dead end an official wall
+drawn as External Geometry used to be: its own edge had nowhere to carry a
+tag at all, until promoted to a real, local line.
+
+### Tagging against an `Open to Below` void
+
+A mezzanine's guardrail is routinely drawn against exactly this: the room it
+really meets is a taller room on **another story**, reaching up through a
+deliberate `Open to Below` hole (§3, "Rooms that are not the story's
+height") rather than being drawn a second time. There is nothing on the
+mezzanine's own sketch to name for that room, so this case is resolved in
+two steps instead of one:
+
+1. At export, the tagged edge is matched to the `Open to Below` face it
+   borders, and that face's own footprint is recorded.
+2. Once every story has been read, that footprint is matched against every
+   room tall enough to reach through it (`OS_Height_m` past its own story's
+   `floor_to_floor_m`) — the same reasoning `find_air_boundaries.py`'s
+   mezzanine-edge rule already applies to the *built* model, run here at
+   export time instead. A prism is extruded straight up, so the room really
+   reaching through a hole has that hole's exact footprint; no match, or
+   more than one, is reported by name rather than guessed at.
+
+The macro's own preview cannot show this part — it would have to read every
+story sketch in the document to do it, which is more than tagging one edge
+should touch — so it reports a count instead ("N edge(s) border an Open to
+Below region") and the real answer shows up in `fc_export_floorplan.py`'s
+own report on the next export.
+
+Tags are ordinary document edits: **Ctrl+S** before exporting.
+
+---
+
+## 6. Canopies and fins — a plan sketch, not an elevation one
 
 A window lives *in* a wall, so it is drawn in elevation. A canopy sticks *out*
 of one, so it is drawn in **plan**, on a sketch whose z is the height of the
@@ -494,7 +586,7 @@ elevation sketch works the same way.
 
 ---
 
-## 6. The roof — one dropdown on the shape you drew
+## 7. The roof — one dropdown on the shape you drew
 
 Without this, every space is a flat-topped prism and the building's top is
 wherever the storey heights put it. To give it the real roof, draw the roof and
@@ -504,7 +596,7 @@ Anything with a shape can be the roof: a `PartDesign::Body`, the `Pad` inside
 it, or a bare face traced over the plan. Run
 
 ```
-.\bridge.ps1 seed samples\FloorplanTest-02.FCStd --init-roof
+.\bridge.ps1 seed samples\FloorplanTest-05.FCStd --init-roof
 ```
 
 and every candidate gets the properties below, all set to `Ignore` — the state
@@ -581,7 +673,7 @@ re-apply, not a redraw.
    by more than 0.1%.
 6. If the roof is not flat: `fc_seed_labels.py --init-roof`, set `OS_RoofMethod`
    on the one object that is the roof, preview with `review_roof.FCMacro`,
-   re-run 4 and 5. Do this **before** drawing any openings (§6).
+   re-run 4 and 5. Do this **before** drawing any openings (§7).
 
 Steps 2 and 3 are once per project. Step 4 onward is re-run every time the
 architecture changes, and only what moved gets rebuilt.

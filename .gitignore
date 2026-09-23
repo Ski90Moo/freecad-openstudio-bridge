@@ -15,12 +15,12 @@ venv/
 
 # FreeCAD documents and their backups.  Your own drawings are inputs you
 # supply, not source, so they stay out -- with one deliberate exception:
-# samples/FloorplanTest-02.FCStd is the worked example every command in the
+# samples/FloorplanTest-05.FCStd is the worked example every command in the
 # docs runs against, and the docs are worth nothing without it.
 *.FCStd
 *.FCStd1
 *.FCBak
-!samples/FloorplanTest-02.FCStd
+!samples/FloorplanTest-05.FCStd
 
 # OpenStudio models and their run directories.
 *.osm

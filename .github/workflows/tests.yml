@@ -67,15 +67,17 @@ jobs:
         run: |
           python build_osm_geometry.py samples/plan.json --out demo.osm
 
-          # samples/rated-walls.txt names the walls that are fire-rated rather
-          # than open, which no rule can tell from the plan alone.  They are
-          # surface names, and surface names are positional: if the drawing
-          # changes, they point at different walls.  That is not silent --
-          # test_the_fire_wall_stayed_solid fails when they rot, which is
-          # exactly what this step exists to catch.
+          # The one fire-rated wall declares itself: OS_AirBoundaryOverride
+          # rides on the wall's own sketch edge in FloorplanTest-05.FCStd, and
+          # fc_export_floorplan.py resolves it into samples/plan.json at
+          # export time, so find_air_boundaries.py picks it up automatically
+          # here with no --solid-surface flag needed. That is the point of
+          # tagging over naming a surface by hand: a surface name is
+          # positional and rots on any rebuild that renumbers surfaces; the
+          # tag survives one. test_the_fire_wall_stayed_solid still checks
+          # the result -- if the tag itself is ever lost, that is what fails.
           python find_air_boundaries.py demo.osm samples/plan.json \
-            --apply-json --solid-surface "$(cat samples/rated-walls.txt)" \
-            --out boundaries.json
+            --apply-json --out boundaries.json
           python apply_air_boundaries.py demo.osm boundaries.json --out demo.osm
 
           python - <<'PY'
@@ -85,14 +87,14 @@ jobs:
           got = (len(model.getSpaces()), len(model.getSurfaces()),
                  len(model.getBuildingStorys()), len(model.getThermalZones()))
           print("spaces %d  surfaces %d  stories %d  zones %d" % got)
-          assert got == (37, 321, 2, 37), "built model does not match the README"
+          assert got == (36, 326, 3, 36), "built model does not match the README"
 
           # Without this the air-boundary invariant tests below would iterate
           # an empty list and pass while testing nothing -- the same silent
           # green the openstudio import check exists to prevent.
           boundaries = len(model.getConstructionAirBoundarys())
           print("air-boundary constructions: %d" % boundaries)
-          assert boundaries == 14, "expected 14 air boundaries, got %d" % boundaries
+          assert boundaries == 6, "expected 6 air boundaries, got %d" % boundaries
           print("matches the README")
           PY
 

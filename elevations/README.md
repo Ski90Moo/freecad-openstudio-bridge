@@ -86,7 +86,7 @@ $FC = "C:\Program Files\FreeCAD 1.1\bin\python.exe"
 
 cd ..
 .\bridge.ps1 openings ..\FloorplanTest-02-Openings.FCStd --out elevations\openings.json
-.\bridge.ps1 apply runs\fptest02.osm elevations\openings.json
+.\bridge.ps1 apply runs\fptest05.osm elevations\openings.json
 ```
 
 `overlay.py SOUTH ov_south.png` draws the result back onto the elevation it

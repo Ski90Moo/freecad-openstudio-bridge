@@ -1,0 +1,401 @@
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the FreeCAD-OpenStudio bridge contributors
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.  See LICENSE for the full text.
+
+"""Make every story's wall-centerline network a normalized planar graph, on
+the open document.
+
+Run from the GUI: Macro -> Macros... -> Execute, with the plan open.  No
+selection needed -- unlike tag_opening.FCMacro/tag_airboundary.FCMacro,
+there is no per-edge judgement call here: every T-junction and every
+External-Geometry-backed official wall gets the same treatment, so this acts
+on every OS_Include sketch in the document at once.
+
+Two things it fixes, both root-caused this session against a real project's
+own fire-rated wall:
+
+  * A wall drawn as one long sketch edge that crosses a T-junction (another
+    wall meeting it partway along its run) has its face boundary fragmented
+    into pieces that do not share the whole edge's own midpoint.
+    air_boundary_overrides() already copes with this at export time by
+    aggregating fragments back together, but a tag on a run touching three
+    or more rooms still cannot resolve to one pair -- there is no such pair
+    to write.  Splitting the sketch edge itself at each T-junction (never
+    the original edge directly -- copy it, pin the copy to the original
+    with two Coincident constraints, demote the *original* to construction,
+    split the *copy* -- verified this is what it takes for anything with a
+    live reference into the original, such as another story's own wall
+    network or an elevation sketch's ExternalGeometry, to keep resolving)
+    turns "one tag, three rooms" into three edges, each independently
+    taggable.
+  * External Geometry (a live link to another object's edge, e.g. a
+    story's wall snapped from the one below) makes a convenient-looking
+    wall that turns out to be untaggable: its geometry never appears in this
+    sketch's own Geometry list, only under a negative GeoId with no
+    GeometryFacadeList entry of its own -- and, root-caused this session
+    against a second real project, invisible to T-junction detection too,
+    which only ever looks at sketch.Geometry, regardless of whether the
+    external edge borders a labelled room. Fixed by tracing a real, local
+    line at the same two endpoints -- anchored to two Vertex-only external
+    references, not the one Edge reference it started as, so it keeps
+    tracking those points if they move later -- and demoting the old Edge
+    reference to construction once the two vertex ones exist (kept, not
+    deleted -- fcbridge.promote_external_edges explains why). Every
+    DEFINING External Geometry edge still present gets this treatment now,
+    not only ones that border a room: extract_room_faces already reads
+    every defining External Geometry edge via Shape.Edges whether or not
+    it has been promoted, so promoting one that turns out not to border a
+    room changes nothing about room detection, only closes the T-junction
+    blind spot for it too. A NON-defining edge (addExternal's own default,
+    and a deliberate "snapping guide, not a wall" --
+    fcbridge._defining_external_geo_ids) is left alone entirely: it never
+    appears in Shape.Edges regardless of promotion, so it can never itself
+    border a room or a T-junction, and promoting it would only manufacture
+    a room-split risk that would not otherwise exist -- root-caused this
+    session too, against FloorplanTest-06's own OPEN WORK MEZZANINE.
+
+Demoting an edge to construction also removes it from the Shape.Edges
+*ordinal* count, shifting every later edge's ordinal down by one -- which
+breaks anything addressing it by raw position rather than a stable name.
+Measured directly: an elevation sketch's own AttachmentSupport (what
+derives its 3D placement) does exactly this, referencing a floor plan's
+wall by "EdgeN". Before splitting a sketch's T-junctions, this macro first
+rewrites every such AttachmentSupport it finds into that edge's own two
+endpoint vertices instead ("VertexN") -- verified FreeCAD's Attachment
+engine auto-renumbers a VertexN reference across a split (State stays
+Up-to-date, Placement is bit-for-bit unchanged, only the stored name
+updates), which it does not do for EdgeN.
+
+fc_export_floorplan.py refuses to export a sketch that still has an
+unsplit T-junction or an un-promoted External Geometry edge
+(fcbridge.wall_network_problems) -- this macro is what clears both,
+in-session, before that check would otherwise stop you.
+
+After every mutating step, every object in the document is checked for
+becoming newly Invalid (fcbridge.document_object_errors) -- not just the
+one sketch being normalized -- and the whole run aborts if anything did.
+This is what would have caught both of the issues above immediately,
+rather than requiring them to be noticed by eye afterward.
+
+Everything happens inside ONE undo transaction: Ctrl+Z puts it all back.
+Nothing is saved until you save.
+"""
+
+import os
+import sys
+
+import FreeCAD
+
+try:
+    import FreeCADGui  # noqa: F401 -- imported for the same reason
+                        # tag_airboundary.FCMacro does: to fail loudly if
+                        # this is ever run headless, not because it is used.
+except ImportError:  # pragma: no cover - only reachable headless
+    FreeCADGui = None
+
+# --------------------------------------------------------------------------
+APPLY = True   # False reports what would change and changes nothing
+# --------------------------------------------------------------------------
+
+# How far a story's total enclosed area may drift between before and after
+# normalization before this refuses to trust the result -- normalization
+# only ever adds split points and swaps which edges are External Geometry
+# vs. real, local geometry; it never moves a wall, so this only has to
+# absorb floating point noise, not real positional change.
+AREA_INVARIANT_TOL_M2 = 0.01
+
+FALLBACK_DIR = os.environ.get("FREECAD_BRIDGE", "")
+
+
+def say(text):
+    FreeCAD.Console.PrintMessage(text + "\n")
+
+
+def warn(text):
+    FreeCAD.Console.PrintWarning(text + "\n")
+
+
+def bridge_dir():
+    here = globals().get("__file__")
+    folders = []
+    if here:
+        folders.append(os.path.dirname(os.path.abspath(here)))
+    if FALLBACK_DIR:
+        folders.append(FALLBACK_DIR)
+    for folder in folders:
+        if os.path.exists(os.path.join(folder, "fcbridge.py")):
+            return folder
+    return None
+
+
+def load_bridge(folder):
+    """(fcbridge, fc_export_floorplan), reloaded so an edit to either takes
+    effect without restarting FreeCAD -- same reasoning as relabel.FCMacro's
+    own load_bridge."""
+    if folder not in sys.path:
+        sys.path.insert(0, folder)
+    import importlib
+    import fcbridge
+    importlib.reload(fcbridge)
+    try:
+        import fc_export_floorplan
+        importlib.reload(fc_export_floorplan)
+    except Exception:
+        fc_export_floorplan = None   # the tag-resolution preview is best
+                                     # effort; normalization itself needs
+                                     # nothing from it.
+    return fcbridge, fc_export_floorplan
+
+
+def total_area_m2(fb, faces):
+    return sum(fb.area_m2(face) for face in faces)
+
+
+def describe_room(story, space_id):
+    for space in story["spaces"]:
+        if space["id"] == space_id:
+            return "%s | %s" % (space["room_number"], space["name"])
+    return space_id[:8]
+
+
+def preview_tags(fb, exporter, sketch, sketches, labels):
+    """(story, boundary_overrides, deferred_count, problems), mirroring
+    tag_airboundary.FCMacro's own resolve_now -- best-effort, since this is
+    a preview of what export will do, not a second implementation of it."""
+    if exporter is None:
+        return None, None, None, ["(could not load fc_export_floorplan.py "
+                                  "to preview)"]
+    (story, problems, _orphans, _minted, _added, _relabeled, _skipped,
+     _height_overrides, boundary_overrides, boundary_deferred,
+     _wall_paired, _wall_exterior, _wall_refused) = exporter.build_story(
+        sketch, labels, sketches)
+    ab_problems = [p for p in problems if fb.AIR_BOUNDARY_EXT_NAME in p]
+    return story, boundary_overrides, len(boundary_deferred), ab_problems
+
+
+def new_document_errors(fb, doc, baseline):
+    """{obj name: state} for anything that went Invalid this run and was
+    not already broken before it started (a document may carry some
+    unrelated pre-existing issue; the gate should only ever object to new
+    breakage, not something already there)."""
+    errors = fb.document_object_errors(doc)
+    return {name: state for name, state in errors.items()
+           if name not in baseline}
+
+
+def check_gate(fb, doc, baseline, step_description):
+    """Raise RuntimeError, aborting the whole run, if anything anywhere in
+    the document -- not just the sketch being normalized -- went newly
+    Invalid. This is the check that would have caught both of this
+    feature's own prior regressions immediately."""
+    new_errors = new_document_errors(fb, doc, baseline)
+    if new_errors:
+        raise RuntimeError(
+            "%s left the following object(s) invalid: %s"
+            % (step_description,
+               ", ".join("%s (%s)" % (name, ",".join(state))
+                        for name, state in new_errors.items())))
+
+
+def normalize_sketch(fb, sketch, faces_before, baseline):
+    """Repair fragile Attachment references, promote every remaining
+    External Geometry edge, then split every T-junction -- in that order,
+    each step checked against the whole-document validity gate and (for
+    the geometry steps) the story's own room count/area invariant before
+    moving on. Returns (repaired, promoted, splits, faces_after) or raises
+    RuntimeError, which aborts the whole run."""
+    before_count = len(faces_before)
+    before_area = total_area_m2(fb, faces_before)
+    doc = sketch.Document
+
+    repaired, attach_problems = fb.repair_edge_attachments(doc, sketch)
+    for p in attach_problems:
+        warn("  %s" % p)
+    if repaired:
+        doc.recompute()
+        check_gate(fb, doc, baseline,
+                  "%r: repairing Attachment references" % sketch.Label)
+
+    promoted = fb.promote_external_edges(sketch)
+
+    if promoted:
+        doc.recompute()
+        check_gate(fb, doc, baseline,
+                  "%r: promoting External Geometry" % sketch.Label)
+        faces = fb.extract_room_faces(sketch)
+        if len(faces) != before_count or \
+                abs(total_area_m2(fb, faces) - before_area) > AREA_INVARIANT_TOL_M2:
+            raise RuntimeError(
+                "%r: promoting External Geometry changed the enclosed "
+                "regions (%d -> %d, area %.3f -> %.3f m2) -- aborting "
+                "rather than risk silently reshaping a room"
+                % (sketch.Label, before_count, len(faces),
+                   before_area, total_area_m2(fb, faces)))
+    else:
+        faces = faces_before
+
+    splits = fb.split_t_junctions(sketch)
+
+    if splits:
+        doc.recompute()
+        check_gate(fb, doc, baseline,
+                  "%r: splitting T-junctions" % sketch.Label)
+        faces_after = fb.extract_room_faces(sketch)
+        if len(faces_after) != before_count or \
+                abs(total_area_m2(fb, faces_after) - before_area) > \
+                AREA_INVARIANT_TOL_M2:
+            raise RuntimeError(
+                "%r: splitting T-junctions changed the enclosed regions "
+                "(%d -> %d, area %.3f -> %.3f m2) -- aborting rather than "
+                "risk silently reshaping a room"
+                % (sketch.Label, before_count, len(faces_after),
+                   before_area, total_area_m2(fb, faces_after)))
+    else:
+        faces_after = faces
+
+    return repaired, promoted, splits, faces_after
+
+
+def run():
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        FreeCAD.Console.PrintError("normalize_walls: no active document.\n")
+        return
+    if FreeCADGui is None:
+        FreeCAD.Console.PrintError(
+            "normalize_walls: this macro needs the FreeCAD GUI.\n")
+        return
+
+    folder = bridge_dir()
+    if folder is None:
+        FreeCAD.Console.PrintError(
+            "normalize_walls: could not find fcbridge.py beside this "
+            "macro%s.\nPoint FreeCAD's User Macros Location at the bridge "
+            "folder, or set FREECAD_BRIDGE.\n"
+            % (" or in %s" % FALLBACK_DIR if FALLBACK_DIR else ""))
+        return
+
+    fb, exporter = load_bridge(folder)
+
+    sketches = fb.story_sketches(doc)
+    if not sketches:
+        FreeCAD.Console.PrintError(
+            "normalize_walls: no sketch has OS_Include set.\n")
+        return
+    labels = fb.room_labels(doc)
+    baseline = fb.document_object_errors(doc)
+
+    say("")
+    say("document : %s (the open one, edits and all)" % doc.Name)
+    say("stories  : %d" % len(sketches))
+    if baseline:
+        say("(%d object(s) already invalid before this run -- unrelated, "
+            "not this macro's concern: %s)"
+            % (len(baseline), ", ".join(baseline)))
+
+    if APPLY:
+        doc.openTransaction("Normalize wall networks")
+
+    total_repaired = total_promoted = total_splits = 0
+    failed = False
+    plan = []
+    for sketch in sketches:
+        story_name = str(getattr(sketch, "OS_StoryName", "") or sketch.Label)
+        before_tags = fb.element_values(sketch, fb.AIR_BOUNDARY_EXT_NAME)
+        faces_before = fb.extract_room_faces(sketch)
+
+        junctions = fb.t_junctions_on_sketch(sketch)
+        ext_remaining = fb.external_wall_geometry(sketch)
+
+        if not junctions and not ext_remaining:
+            say("")
+            say("%s: already normalized -- nothing to do." % story_name)
+            continue
+
+        say("")
+        say("%s:" % story_name)
+        if ext_remaining:
+            say("  %d External Geometry edge(s) not yet promoted"
+                % len(ext_remaining))
+        if junctions:
+            say("  %d wall edge(s) cross a T-junction" % len(junctions))
+
+        if not APPLY:
+            say("  APPLY = False -- nothing changed.  Set APPLY = True at "
+                "the top of this macro to write it.")
+            continue
+
+        try:
+            repaired, promoted, splits, faces_after = normalize_sketch(
+                fb, sketch, faces_before, baseline)
+        except RuntimeError as exc:
+            warn("  ABORTED: %s" % exc)
+            failed = True
+            break
+
+        total_repaired += len(repaired)
+        total_promoted += len(promoted)
+        total_splits += len(splits)
+        after_tags = fb.element_values(sketch, fb.AIR_BOUNDARY_EXT_NAME)
+        if repaired:
+            say("  repaired %d Attachment reference(s): %s"
+                % (len(repaired), ", ".join(c[0] for c in repaired)))
+        say("  promoted %d edge(s) off External Geometry; split %d edge(s) "
+            "at a T-junction" % (len(promoted), len(splits)))
+        say("  %s tags: %d -> %d"
+            % (fb.AIR_BOUNDARY_EXT_NAME, len(before_tags), len(after_tags)))
+
+        plan.append((sketch, story_name))
+
+    if failed:
+        if APPLY:
+            doc.abortTransaction()
+        say("")
+        warn("normalize_walls: aborted -- no changes were made.")
+        return
+
+    if APPLY:
+        doc.commitTransaction()
+        doc.recompute()
+
+    say("")
+    if not APPLY:
+        say("normalize_walls: preview only, nothing changed.")
+        return
+    if not (total_repaired or total_promoted or total_splits):
+        say("normalize_walls: every sketch was already normalized.")
+        return
+
+    say("normalize_walls: repaired %d Attachment reference(s), promoted %d "
+        "edge(s), split %d edge(s) across %d sketch(es).  Ctrl+Z puts it "
+        "all back; nothing is saved until you save."
+        % (total_repaired, total_promoted, total_splits, len(plan)))
+
+    if exporter is None:
+        return
+    say("")
+    say("Previewing tag resolution now that the network is normalized:")
+    for sketch, story_name in plan:
+        story, boundary_overrides, deferred_count, ab_problems = \
+            preview_tags(fb, exporter, sketch, sketches, labels)
+        if story is None:
+            say("  %s: (could not preview: %s)" % (story_name, ab_problems))
+            continue
+        for o in boundary_overrides:
+            say("  %-5s %-20s %-28s ->  %s"
+                % (o["kind"], story_name, describe_room(story, o["space_a"]),
+                   describe_room(story, o["space_b"])))
+        if deferred_count:
+            say("  %s: %d edge(s) border an Open to Below region -- "
+                "resolved against the room reaching through it on export"
+                % (story_name, deferred_count))
+        for p in ab_problems:
+            say("  NOT resolved -- %s" % p)
+
+
+run()

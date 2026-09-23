@@ -11,7 +11,7 @@
 Run under FreeCAD's bundled Python:
 
     "C:/Program Files/FreeCAD 1.1/bin/python.exe" fc_export_openings.py \
-        FloorplanTest-02.FCStd --out openings.json
+        FloorplanTest-05.FCStd --out openings.json
 
 Two ways to draw an opening, both read here:
 

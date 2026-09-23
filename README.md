@@ -95,8 +95,8 @@ osvenv/Scripts/python.exe -m unittest discover -s tests
 
 The same suite runs on Ubuntu, Windows and macOS on every push. CI then builds
 the sample model from [`samples/plan.json`](samples/plan.json), applies its air
-boundaries, and checks the result: 37 spaces, 321 surfaces, 2 stories, 37 zones
-and 14 air-boundary constructions, with the rated walls still solid. So the
+boundaries, and checks the result: 36 spaces, 326 surfaces, 3 stories, 36 zones
+and 6 air-boundary constructions, with the rated wall still solid. So the
 model half is exercised end to end on three platforms, not just in parts —
 which is what the badge above reports, and the only thing keeping *"the Python
 is platform-independent"* an honest claim rather than a hopeful one.
@@ -114,17 +114,52 @@ at this checkout. If you would rather keep it elsewhere, set the
 
 ## Quickstart
 
-[`samples/FloorplanTest-02.FCStd`](samples/FloorplanTest-02.FCStd) is the
+[`samples/FloorplanTest-05.FCStd`](samples/FloorplanTest-05.FCStd) is the
 worked example the rest of this file quotes numbers from — the two-storey
-light-industrial building above, 37 spaces on a 45° north axis, traced and
-fully tagged. Every command below runs against it as shipped, so you can see
-the whole pipeline work before drawing anything of your own:
+light-industrial building above (plus an attic story the roof carves out on
+its own), 36 spaces on a 0° north axis, traced and fully tagged, including
+one real fire-rated wall.
+
+**For a complete model** (geometry, openings, and shading, all applied) in
+one call:
+
+```powershell
+.\bridge.ps1 roundtrip samples\FloorplanTest-05.FCStd --out runs\demo.osm
+```
+
+This chains export → build → openings (export + apply) → shading (export +
+apply) → air boundaries (find + apply) → dump → import (`--into` the same
+FCStd), stopping at the first failed step. `find_air_boundaries.py` reads any
+`OS_AirBoundaryOverride` tag straight off the plan, so a fire-rated wall
+declared in the FCStd is honoured automatically — no `--solid-surface` flag
+to remember. Use this over running the pieces by hand whenever the goal is a
+model to actually simulate or inspect — a build that stops after
+`build_osm_geometry.py` looks complete (it opens, it has walls, it counts
+rooms right) but has no subsurfaces, shading surfaces or air boundaries at
+all, and nothing about opening it says so until you go looking. That gap hit
+this project's own worked examples repeatedly: the bare `.osm`, a copy in
+another tool's `runs/` folder, and — the one the other two don't cover — the
+*source FCStd's own* `OS_Geometry` preview (the "Subsurfaces from the model"
+/ "Shading from the model" groups, and each wall's own `OS_AirBoundary`
+property, all visible in the FreeCAD tree), which `apply_openings.py`/
+`apply_shading.py`/`apply_air_boundaries.py` never touch at all since they
+only ever write the `.osm`. The final dump+import round-trips the *complete*
+model's surfaces back into the document that was traced, so what you see in
+FreeCAD matches what you'd load in OpenStudio. This backs up and rewrites the
+source FCStd in place — expect it, and check it into git like any other
+change if you're keeping the result. Intermediate JSON lands beside the
+`.osm` (`demo.plan.json`, `demo.openings.json`, `demo.shading.json`,
+`demo.boundaries.json`, `demo.surfaces.json`).
+
+Every command below runs against the sample as shipped too, so you can see
+each stage of the pipeline work individually before drawing anything of your
+own:
 
 ```powershell
 $FC = "C:\Program Files\FreeCAD 1.1\bin\python.exe"
 
 # exact vertices out of the drawing
-& $FC fc_export_floorplan.py samples\FloorplanTest-02.FCStd --out plan.json
+& $FC fc_export_floorplan.py samples\FloorplanTest-05.FCStd --out plan.json
 
 # build the model  (writes demo.osm + demo.fcmap.json)
 osvenv\Scripts\python.exe build_osm_geometry.py plan.json --out demo.osm
@@ -133,14 +168,18 @@ osvenv\Scripts\python.exe build_osm_geometry.py plan.json --out demo.osm
 osvenv\Scripts\python.exe dump_osm_geometry.py demo.osm --out surfaces.json
 
 # and the windows and doors already drawn on it
-& $FC fc_export_openings.py samples\FloorplanTest-02.FCStd --out openings.json
+& $FC fc_export_openings.py samples\FloorplanTest-05.FCStd --out openings.json
 ```
 
-You should get **2 stories, 37 spaces, 1267.3 m²**, then **321 surfaces** and
+You should get **3 stories, 36 spaces, 2183.6 m²**, then **326 surfaces** and
 **28 openings** (5 doors, 15 fixed windows, 4 glass doors, 4 overhead doors).
 The build step prints an area check — every space's floor area compared with
 what FreeCAD measured — and fails if any disagrees by more than 0.1%. On this
-model the worst disagreement is 0.0092%.
+model the worst disagreement is 0.0007%. This step-by-step form stops after
+reading vertices back out — it never applies openings or shading to the
+`.osm` at all, which is exactly the gap `roundtrip` above closes; reach for
+it (or run `openings`/`apply`/`shading`/`apply-shading` by hand afterward) to
+get a model with subsurfaces and shading surfaces in it.
 
 The sample comes fully tagged, so these four leave it byte-for-byte unchanged
 — the exporters only write back into a document when they have to mint an
@@ -148,7 +187,7 @@ The sample comes fully tagged, so these four leave it byte-for-byte unchanged
 
 `samples/openings.json` is exactly what the fourth command produces.
 `samples/surfaces.json` is the same format but taken from the fully worked
-model — it carries the 28 openings and 4 shading surfaces a bare geometry
+model — it carries the 28 openings and 5 shading surfaces a bare geometry
 build has not got yet, and its space names are one ordinal apart, because
 `build_osm_geometry.py` reuses the ordinals a previous build gave each
 `OS_SpaceId` and a build from scratch has no previous build to read. Both are
@@ -207,6 +246,118 @@ double-counts the wall thickness or leaves a gap.
 The rooms are recovered automatically as the enclosed regions of that network,
 so shared walls are drawn once, not twice.
 
+### 1a. A wall network must be normalized, and an official wall is never External Geometry
+
+Two rules `normalize_walls.FCMacro` enforces, and `fc_export_floorplan.py`
+refuses to export past if either is broken:
+
+- **Every T-junction needs a split there too.** A long wall drawn as one
+  edge across a point where another wall meets it partway along its run —
+  common, and easy to do without noticing — has its *face* boundary
+  fragmented into pieces that do not all share the whole edge's own
+  midpoint. `air_boundary_overrides()` copes with this at export time for a
+  tagged edge (aggregating fragments back together), but a tag on a run
+  touching three or more rooms still cannot resolve to the one pair an air
+  boundary needs. Run `normalize_walls.FCMacro`: it finds every T-junction
+  and splits it there — but never by splitting the original edge in place.
+  A story sketch's edges are routinely referenced from elsewhere (another
+  story snapping its corners to this one, an elevation sketch tracing
+  openings against it — see §6c), and splitting an edge directly breaks
+  every such reference into it, silently: measured directly, on a real
+  project, as "Failed to project external geometry" and disappearing walls
+  on the very next recompute. Instead, the macro copies the edge in place,
+  pins the copy to the original with two `Coincident` constraints, demotes
+  the *original* to construction (its topology never changes, so anything
+  referencing it keeps resolving), and only splits the copy — using the
+  native `SketchObject.split()`, which carries any tag already on the copy
+  onto both resulting pieces automatically. Every `Part::GeometryStringExtension`
+  on the original — not just `OS_AirBoundaryOverride` specifically — is
+  copied onto the new copy explicitly before the first split, since
+  `split()`'s own tag inheritance only ever applies to an element it is
+  itself dividing.
+- **External Geometry is a reference, never an official wall.** A wall
+  traced by clicking "External Geometry" on another object's edge (handy
+  for snapping a story's corners to the one below) has no entry of its own
+  in this sketch's `Geometry` list — only a negative GeoId with no
+  `GeometryFacadeList` entry, so it can never carry a tag — and, root-caused
+  against a second real project, is invisible to T-junction detection too:
+  `t_junctions_on_sketch` only ever iterates `sketch.Geometry`, regardless
+  of whether the external edge borders a labelled room.
+  `normalize_walls.FCMacro` promotes **every** remaining External Geometry
+  edge unconditionally now, not only ones that close a room boundary —
+  `extract_room_faces` already reads every External Geometry edge via
+  `Shape.Edges` whether or not it has been promoted (confirmed directly:
+  `Shape.Edges` on a sketch with 16 un-promoted entries was 16 edges longer
+  than its real, non-construction `Geometry` count), so promoting one that
+  turns out not to border any room changes nothing about room detection,
+  only closes the T-junction blind spot for it too. Promotion traces a
+  real local line at the same two endpoints — anchored to two `Vertex`-only
+  external references, not the one `Edge` reference it started as — then
+  demotes the old `Edge` reference to construction, same as ever; it is
+  kept rather than deleted, since `delExternal`'s own 0-based index turned
+  out to be unsafe to compute reliably (see `_external_geo_source_object`'s
+  docstring) — a little inert cruft left behind beats deleting the wrong
+  entry. Unlike `AttachmentSupport` below, an `Edge`-based
+  `ExternalGeometry` reference is not itself ordinal-fragile — verified
+  directly that it already re-resolves correctly across an unrelated edge
+  elsewhere in the source sketch being demoted to construction (`State`
+  stays `Up-to-date`, the stored name updates, endpoints unchanged) — so
+  the switch to vertex anchoring here is for consistency, not that
+  specific correctness fix. It does matter for a different reason at
+  scale, though: resolving a promotion's own source object and vertex
+  names by coordinate match, not by the source edge's current `EdgeN`
+  name, is what keeps promotion working even where an extensive topology
+  change on the source (25 T-junction splits, in the case that surfaced
+  this) makes `ExternalGeometry`'s own displayed name list collapse two
+  originally-distinct references down to one shared name.
+
+Demoting an edge to construction removes it from the `Shape.Edges`
+*ordinal* count too, shifting every later edge's ordinal down by one —
+which silently breaks anything addressing it by raw position rather than a
+stable name. Measured directly, on a real project: an elevation sketch's
+own `AttachmentSupport` (what derives its 3D placement, via `MapMode`)
+does exactly this, referencing a wall by `EdgeN`. Before splitting a
+sketch's T-junctions, `normalize_walls.FCMacro` first rewrites every such
+`AttachmentSupport` it finds anywhere in the document into that edge's own
+two endpoint vertices instead (`VertexN`) — verified FreeCAD's Attachment
+engine auto-renumbers a `VertexN` reference across a split (`State` stays
+`Up-to-date`, `Placement` is bit-for-bit unchanged, only the stored name
+updates), which it does not do for `EdgeN`. **If you hand-build an
+Attachment onto a wall-network sketch that might later be normalized,
+prefer vertex references over edge references** for exactly this reason.
+After every mutating step the macro also checks every object in the whole
+document (`fcbridge.document_object_errors`) for becoming newly invalid,
+not just the sketch it is normalizing, and aborts the entire run rather
+than leave anything broken.
+
+All of this is a pure geometry no-op — verified end to end on the shipped
+sample (which turned out to have its own Attachment-referencing sketches
+too, not just doc05): region count and total area per story are asserted
+unchanged before and after, and a full rebuild reproduces the exact same
+surface/zone/air-boundary counts. See [TAGGING.md](TAGGING.md) §5 for the
+tagging workflow this enables.
+
+Each split point is also pinned, with its own `Coincident` constraint, to
+whichever other wall's endpoint actually caused that T-junction — `split()`
+only cuts at a coordinate snapshot, it does not know the point is supposed
+to keep coinciding with anything. Without this pin, later moving that other
+wall's endpoint leaves the split point behind, opening a gap where the
+walls used to meet exactly — measured directly. A sketch normalized before
+this pin existed can be repaired without re-splitting at all:
+`fcbridge.pin_existing_splits(sketch)` reconstructs the same
+`(other_key, other_pos_id)` pairing `split_t_junctions()` would compute
+today and adds only the missing `Coincident` constraints, leaving every
+GeoId, vertex number, and downstream Attachment untouched. Prefer this over
+`undo_t_junction_splits()` + re-splitting whenever anything has attached to
+the sketch since it was split — `undo_t_junction_splits()` deletes the
+split pieces and restores the original edge, which is exactly why
+`repair_edge_attachments` had to switch elevation sketches from `EdgeN` to
+`VertexN` in the first place, but that vertex-tracking is one-directional:
+undoing a split after an Attachment has already been repointed at its
+*post-split* vertex numbers breaks that Attachment (`State` goes
+`Invalid`), since deleting the pieces makes those vertex numbers stop
+existing. Measured directly on doc05.
+
 ### 2. Story metadata lives on the sketch
 
 Set these in the Data tab, OpenStudio group (`fc_seed_labels.py --init-stories`
@@ -233,7 +384,7 @@ sketch's own frame via `Placement.inverse()`, so both layouts work:
 
 - **side by side** on the sheet, every sketch left at `z = 0`;
 - **stacked** at real elevations, as the shipped
-  [sample](samples/FloorplanTest-02.FCStd) does
+  [sample](samples/FloorplanTest-05.FCStd) does
   (`Sketch001.Placement.Base.z = 3378.2`).
 
 Stacked, the stories share a footprint, so in-plane position alone cannot say
@@ -337,7 +488,7 @@ the assigning:
 
 ```powershell
 osvenv\Scripts\python.exe find_air_boundaries.py `
-    runs\fptest02.osm runs\floorplans\fptest02.json
+    runs\fptest05.osm runs\floorplans\fptest05.json
 # add --apply-json for the apply_measure arguments as JSON,
 # or --delta-t to re-size against a different temperature difference
 ```
@@ -689,8 +840,8 @@ generated. So the bridge does them.
 Generate the model, bring the surfaces back into the *same* document, then:
 
 ```powershell
-.\bridge.ps1 import surfaces.json --into samples\FloorplanTest-02.FCStd
-.\bridge.ps1 planes samples\FloorplanTest-02.FCStd
+.\bridge.ps1 import surfaces.json --into samples\FloorplanTest-05.FCStd
+.\bridge.ps1 planes samples\FloorplanTest-05.FCStd
 ```
 
 `planes` finds every distinct exterior wall plane and gives each one a sketch:
@@ -777,7 +928,7 @@ and re-adding it would cost every constraint made against it.
 
 ```powershell
 .\bridge.ps1 crop                                    # cut the sheet into facades
-.\bridge.ps1 elevations samples\FloorplanTest-02.FCStd elevations\facades\facade_images.json
+.\bridge.ps1 elevations samples\FloorplanTest-05.FCStd elevations\facades\facade_images.json
 ```
 
 `crop` renders the elevation sheet and cuts one image per facade; `elevations`
@@ -1008,7 +1159,7 @@ Two millimetres fixes picking from outside, where the window is now nearer the
 camera. From inside, the wall is in front again and still wins.
 `subsurface_focus.FCMacro` settles it from every direction: in focus mode
 **every imported surface stops answering the cursor and only the openings
-do** — 321 surfaces out of the way, 28 openings picking, on the test building.
+do** — 326 surfaces out of the way, 28 openings picking, on the test building.
 
 The all-or-nothing is deliberate. Taking only the *obstructing* surfaces out of
 the way leaves a model where some faces answer the cursor and some do not, so a
@@ -1051,10 +1202,11 @@ about them a person has to check: it should be the setback you expect. A
 surprise here means the outline was drawn over the wrong part of the sheet.
 
 Facade names (`North`, `South`, `East 501`, …) are **plan north**, matching the
-elevation sheets, not true north. This building's north axis is 45°, so its
-"south" elevation faces true southwest; a sketch labelled `Southwest` for the
-wall everyone points at as south is a trap. The true bearing is printed
-alongside and lives in the model's north axis, where it belongs.
+elevation sheets, not true north. On a building drawn at a rotated north axis,
+its "south" elevation may face nowhere near true south; a sketch labelled to
+match the true bearing for the wall everyone points at as south is a trap.
+The true bearing is printed alongside and lives in the model's north axis,
+where it belongs.
 
 ### 7. Canopies and fins are traced in **plan**, not in elevation
 
@@ -1067,8 +1219,8 @@ Put a roof-plan or site-plan image on the sketch plane the same way `elevations`
 places a facade drawing, trace each canopy as a closed rectangle, and:
 
 ```powershell
-.\bridge.ps1 shading samples\FloorplanTest-02.FCStd --out shading.json
-.\bridge.ps1 apply-shading runs\fptest02.osm shading.json
+.\bridge.ps1 shading samples\FloorplanTest-05.FCStd --out shading.json
+.\bridge.ps1 apply-shading runs\fptest05.osm shading.json
 ```
 
 A sketch is a shading sketch when its **Label contains a keyword** — as the
@@ -1118,8 +1270,8 @@ holds, and `apply-shading` proves it by reading every one back through the
 group's transformation before it saves:
 
 ```
-added 4 shading surface(s)
-  Building Building Shading Surfaces   4 surface(s), 13.354 m2
+added 5 shading surface(s)
+  Building Building Shading Surfaces   5 surface(s), 33.500 m2
   worst read-back deviation: 0.000000000 m
 ```
 
@@ -1148,7 +1300,7 @@ shape can be the roof: a padded `PartDesign::Body`, its `Pad`, or a bare face
 traced over the plan.
 
 ```powershell
-.\bridge.ps1 seed samples\FloorplanTest-02.FCStd --init-roof
+.\bridge.ps1 seed samples\FloorplanTest-05.FCStd --init-roof
 ```
 
 puts the dropdown on every candidate and leaves them all at `Ignore`, which is
@@ -1327,9 +1479,9 @@ Then in Claude: `load_osm_model` → `validate_model` → `view_model`, and on t
 
 ```powershell
 osvenv\Scripts\python.exe dump_osm_geometry.py runs\mybuilding.osm --out surfaces.json
-& $FC fc_import_surfaces.py surfaces.json --into samples\FloorplanTest-02.FCStd
-& $FC verify_roundtrip.py samples\FloorplanTest-02.FCStd surfaces.json  # must be 0.000000 mm
-& $FC fc_seed_openings.py samples\FloorplanTest-02.FCStd
+& $FC fc_import_surfaces.py surfaces.json --into samples\FloorplanTest-05.FCStd
+& $FC verify_roundtrip.py samples\FloorplanTest-05.FCStd surfaces.json  # must be 0.000000 mm
+& $FC fc_seed_openings.py samples\FloorplanTest-05.FCStd
 ```
 
 **`--into` puts the generated surfaces in the document the plan was traced
@@ -1420,7 +1572,7 @@ not change what shows up; `OS_Construction` carries the name for identifying
 which pair a face belongs to.
 
 ```powershell
-& $FC fc_export_openings.py samples\FloorplanTest-02.FCStd --out openings.json
+& $FC fc_export_openings.py samples\FloorplanTest-05.FCStd --out openings.json
 osvenv\Scripts\python.exe apply_openings.py runs\mybuilding.osm openings.json
 ```
 
@@ -1517,7 +1669,7 @@ Same shape, one sketch later — a plan sketch at the height of the plate rather
 than an elevation sketch on the wall (§7):
 
 ```powershell
-& $FC fc_export_shading.py samples\FloorplanTest-02.FCStd --out shading.json
+& $FC fc_export_shading.py samples\FloorplanTest-05.FCStd --out shading.json
 osvenv\Scripts\python.exe apply_shading.py runs\mybuilding.osm shading.json
 ```
 
@@ -1529,11 +1681,11 @@ compared with what went in before the model is saved.
 
 ```powershell
 # put OS_RoofMethod on every candidate; they all start at Ignore
-& $FC fc_seed_labels.py samples\FloorplanTest-02.FCStd --init-roof
+& $FC fc_seed_labels.py samples\FloorplanTest-05.FCStd --init-roof
 
 # ... pick Extend or Attic in the Data tab, then preview with
 # review_roof.FCMacro, then:
-& $FC fc_export_floorplan.py samples\FloorplanTest-02.FCStd --out plan.json
+& $FC fc_export_floorplan.py samples\FloorplanTest-05.FCStd --out plan.json
 osvenv\Scripts\python.exe build_osm_geometry.py plan.json --out runs\mybuilding.osm
 ```
 
@@ -1565,10 +1717,10 @@ this document's labels. Nothing reaches disk until you save.
 trip. It reports before it writes:
 
 ```powershell
-& $FC fc_relabel.py samples\FloorplanTest-02.FCStd `
-    --previous runs\fptest02.fcmap.json           # report
-& $FC fc_relabel.py samples\FloorplanTest-02.FCStd `
-    --previous runs\fptest02.fcmap.json --apply   # write
+& $FC fc_relabel.py samples\FloorplanTest-05.FCStd `
+    --previous runs\fptest05.fcmap.json           # report
+& $FC fc_relabel.py samples\FloorplanTest-05.FCStd `
+    --previous runs\fptest05.fcmap.json --apply   # write
 ```
 
 Pointing FreeCAD's macro runner at `fc_relabel.py` itself does **not** work

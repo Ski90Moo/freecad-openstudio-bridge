@@ -11,7 +11,7 @@
 Run under FreeCAD's bundled Python:
 
     "C:/Program Files/FreeCAD 1.1/bin/python.exe" fc_relabel.py \
-        FloorplanTest-02.FCStd --previous runs/floorplans/fptest02.json
+        FloorplanTest-05.FCStd --previous runs/floorplans/fptest05.json
 
 Reports what it would do; --apply writes it.
 

@@ -583,7 +583,7 @@ def restore(model, captured, space_names_now):
                            record["construction"]))
                 continue
             if (record["construction"] in constructions
-                    and not target.construction().is_initialized()):
+                    and target.isConstructionDefaulted()):
                 target.setConstruction(constructions[record["construction"]])
                 report["inherited"] += 1
             if mode == "coplanar" and record["subsurfaces"]:

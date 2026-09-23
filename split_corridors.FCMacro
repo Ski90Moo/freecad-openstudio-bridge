@@ -1,0 +1,335 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the FreeCAD-OpenStudio bridge contributors
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.  See LICENSE for the full text.
+
+# Split a T, L or cross (+) shaped corridor into per-leg rectangles, in the
+# wall-centerline sketch itself -- before normalize_walls.FCMacro runs and
+# before any OpenStudio geometry exists.
+#
+# Run from inside FreeCAD (Macro -> Macros... -> Execute) against the whole
+# document -- no selection needed, the same shape as normalize_walls.FCMacro.
+# For every enclosed room whose label matches corridor_split.CORRIDOR_PATTERN
+# on a story sketch with OS_Include set, this:
+#
+#   1. reads the room's own polygon and classifies its shape
+#      (corridor_split.classify_and_cut -- rectangle / L / T / cross /
+#      unsupported);
+#   2. for L/T/cross, draws the straight cut(s) that split it into
+#      rectangles as new wall-centerline edges, pinning each endpoint that
+#      lands exactly on an existing vertex with a Coincident constraint (a
+#      T/cross cut's endpoints always do -- they are the room's own reflex
+#      corners; an L cut's far endpoint often lands mid-wall instead, which
+#      is exactly the T-junction normalize_walls.FCMacro is for -- run that
+#      next, not this);
+#   3. tags each new edge OS_AirBoundaryOverride = OPEN, the same tag
+#      tag_airboundary.FCMacro writes by hand -- a seam this macro invented
+#      is never a real wall, so it is forced open unconditionally rather
+#      than left to find_air_boundaries.py's corridor heuristic;
+#   4. renames the room, in place, with a stable per-leg letter suffix on
+#      its own room number: "HALL-1 | Corridor" splitting in two becomes
+#      "HALL-1a | Corridor" (the original label, kept where it is -- same
+#      OS_SpaceId, same identity, same HVAC if any) and "HALL-1b | Corridor"
+#      (a brand-new label minted at the new leg's centre, brand-new
+#      OS_SpaceId). A cross gets "a"/"b"/"c". The lettering is deterministic
+#      -- "a" is always wherever the original label already was, and the
+#      rest are ordered by each new leg's own position -- so the same input
+#      always produces the same names.
+#
+# Anything whose reflex-corner count or layout doesn't cleanly resolve to a
+# T, L or cross (a U, a Z, a zigzag, non-perpendicular walls) is left
+# completely untouched and printed under YOUR CALL -- it needs a person.
+#
+# Nothing is saved here. Review the new edges and renamed/new labels in the
+# GUI, save, then run normalize_walls.FCMacro next -- the same order as
+# drawing any other new room by hand.
+#
+# Re-running this on an already-split document is a no-op: once a leg is
+# its own labeled rectangle, corridor_split.classify_and_cut reports it as
+# "rectangle" and nothing happens to it.
+
+import os
+import re
+import sys
+
+import FreeCAD
+
+try:
+    import FreeCADGui
+except ImportError:  # pragma: no cover - only reachable headless
+    FreeCADGui = None
+
+LEG_LETTERS = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _bridge_module(name):
+    """Import `name` from this checkout (or FREECAD_BRIDGE), or None.
+
+    Same pattern as tag_airboundary.FCMacro / tag_opening.FCMacro, so this
+    macro works wherever FreeCAD's macro location points, not only when it
+    happens to be this checkout.
+    """
+    for folder in (os.path.dirname(os.path.abspath(__file__)),
+                   os.environ.get("FREECAD_BRIDGE", "")):
+        if not folder:
+            continue
+        if os.path.exists(os.path.join(folder, name + ".py")):
+            if folder not in sys.path:
+                sys.path.insert(0, folder)
+            import importlib
+            return importlib.import_module(name)
+    return None
+
+
+def load_fcbridge():
+    return _bridge_module("fcbridge")
+
+
+def load_corridor_split():
+    return _bridge_module("corridor_split")
+
+
+def load_seed_labels():
+    return _bridge_module("fc_seed_labels")
+
+
+def _find_existing_vertex(sketch, skip_index, point, tol_mm=0.05):
+    """(geo_index, pos) of an existing sketch vertex at `point` (a
+    FreeCAD.Vector in mm), pos 1=start/2=end, or None.  tol_mm sits well
+    above WELD_TOL_MM (0.01 mm) so ordinary floating-point noise from the
+    geometry kernel never produces a near-miss.
+    """
+    for i, geo in enumerate(sketch.Geometry):
+        if i == skip_index:
+            continue
+        for pos, attr in ((1, "StartPoint"), (2, "EndPoint")):
+            p = getattr(geo, attr, None)
+            if p is not None and (p - point).Length <= tol_mm:
+                return i, pos
+    return None
+
+
+def _pin_if_existing(sketch, geo_index, pos, point):
+    import Sketcher
+    found = _find_existing_vertex(sketch, geo_index, point)
+    if found is None:
+        return False
+    other_index, other_pos = found
+    sketch.addConstraint(Sketcher.Constraint(
+        "Coincident", geo_index, pos, other_index, other_pos))
+    return True
+
+
+def _tag_open(fb, sketch, geo_index):
+    import Part
+    facades = sketch.GeometryFacadeList
+    extension = Part.GeometryStringExtension()
+    extension.Name = fb.AIR_BOUNDARY_EXT_NAME
+    extension.Value = "OPEN"
+    facades[geo_index].setExtension(extension)
+    sketch.GeometryFacadeList = facades
+
+
+def _draw_cuts(fb, sketch, cuts):
+    """Draw each (p, q) metres cut as a new wall-centerline edge, pin
+    whichever endpoints coincide with existing geometry, and tag every new
+    edge open.  Returns [(geo_index, start_pinned, end_pinned), ...].
+    """
+    import Part
+    drawn = []
+    for (x0, y0), (x1, y1) in cuts:
+        p0 = FreeCAD.Vector(x0 * fb.MM_PER_M, y0 * fb.MM_PER_M, 0)
+        p1 = FreeCAD.Vector(x1 * fb.MM_PER_M, y1 * fb.MM_PER_M, 0)
+        geo_index = sketch.addGeometry(Part.LineSegment(p0, p1), False)
+        start_pinned = _pin_if_existing(sketch, geo_index, 1, p0)
+        end_pinned = _pin_if_existing(sketch, geo_index, 2, p1)
+        _tag_open(fb, sketch, geo_index)
+        drawn.append((geo_index, start_pinned, end_pinned))
+    return drawn
+
+
+def _set_label_number(label, new_number):
+    """Rewrite a room label's first line with a new room number, keeping
+    the room name exactly as drawn."""
+    lines = list(label.Text or [])
+    if not lines:
+        return
+    first = lines[0]
+    if "|" in first:
+        _old, _, name = first.partition("|")
+        lines[0] = "%s | %s" % (new_number, name.strip())
+    else:
+        lines[0] = new_number
+    label.Text = lines
+
+
+def _relabel_legs(fb, cs, seed_labels, doc, sketch, story_name,
+                  original_label, original_number, original_name,
+                  original_polygon):
+    """After cutting one corridor room into legs: rename the original
+    label's room number with an "a" suffix (same OS_SpaceId, same
+    identity, unchanged position) and mint a brand-new label -- brand-new
+    OS_SpaceId -- for every other leg, lettered "b", "c", ... in order of
+    each new leg's own position, so relabeling is deterministic.
+
+    Returns the list of (room_number, is_new) for reporting.
+    """
+    import Draft
+
+    faces = fb.extract_room_faces(sketch)
+    mine = [f for f in faces
+           if cs._point_strictly_inside(original_polygon,
+                                        tuple(fb.centroid_m(f, sketch)))]
+
+    primary_pairs, _u, _o, _m = fb.match_labels_to_faces(
+        mine, [original_label], sketch)
+    if not primary_pairs:
+        return None  # the original label's point no longer lands in any
+                     # of this room's own legs -- refuse to guess, leave
+                     # every label exactly as it is.
+    primary_face = primary_pairs[0][0]
+    others = [f for f in mine if f is not primary_face]
+    others.sort(key=lambda f: tuple(fb.centroid_m(f, sketch)))
+
+    group = seed_labels.group_for(doc, story_name)
+    results = []
+
+    primary_number = original_number + LEG_LETTERS[0]
+    _set_label_number(original_label, primary_number)
+    fb.sync_label_display(original_label)
+    results.append((primary_number, False))
+
+    for i, face in enumerate(others):
+        number = original_number + LEG_LETTERS[1 + i]
+        pt = fb.interior_point(face, sketch)
+        text = Draft.make_text(["%s | %s" % (number, original_name)], pt)
+        fb.sync_label_display(text)
+        fb.get_or_mint_space_id(text)
+        group.addObject(text)
+        results.append((number, True))
+
+    return results
+
+
+def split_sketch(fb, cs, seed_labels, doc, sketch, pattern, labels, sketches):
+    """One story's worth of work.  Returns a report dict."""
+    story_name = getattr(sketch, "OS_StoryName", "") or sketch.Label
+    faces = fb.extract_room_faces(sketch)
+    mine = fb.labels_for_sketch(sketch, labels, sketches)
+    pairs, _unlabeled, _orphans, _multi = fb.match_labels_to_faces(
+        faces, mine, sketch)
+
+    split, left_alone = [], []
+    for face, label in pairs:
+        if fb.is_skip_label(label):
+            continue
+        number, room_name = fb.parse_label_text(label)
+        if not room_name or not pattern.search(room_name):
+            continue
+
+        polygon = fb.face_polygon_m(face, sketch)
+        kind, result = cs.classify_and_cut(polygon)
+        if kind == cs.RECTANGLE:
+            continue
+        if kind == cs.UNSUPPORTED:
+            left_alone.append((room_name, result))
+            continue
+
+        drawn = _draw_cuts(fb, sketch, result)
+        doc.recompute()
+        legs = _relabel_legs(fb, cs, seed_labels, doc, sketch, story_name,
+                             label, number or "LEG", room_name, polygon)
+        split.append((room_name, kind, drawn, legs))
+
+    return {"name": story_name, "split": split, "left_alone": left_alone}
+
+
+def split_document(fb, cs, seed_labels, doc):
+    """Whole-document pass.  Never touches FreeCADGui, so this is callable
+    headlessly (e.g. for testing) as well as from the macro's own run().
+    """
+    pattern = re.compile(cs.CORRIDOR_PATTERN, re.IGNORECASE)
+    sketches = fb.story_sketches(doc)
+    labels = fb.room_labels(doc)
+
+    report = {"stories": [], "errors": {}}
+    for sketch in sketches:
+        report["stories"].append(
+            split_sketch(fb, cs, seed_labels, doc, sketch, pattern, labels,
+                        sketches))
+
+    doc.recompute()
+    report["errors"] = fb.document_object_errors(doc)
+    return report
+
+
+def _print_report(report):
+    total_split = sum(len(s["split"]) for s in report["stories"])
+    total_left = sum(len(s["left_alone"]) for s in report["stories"])
+
+    print("split_corridors: %d corridor(s) split, %d left for review"
+          % (total_split, total_left))
+    for story in report["stories"]:
+        if not story["split"] and not story["left_alone"]:
+            continue
+        print("\n%s" % story["name"])
+        for room_name, kind, drawn, legs in story["split"]:
+            if legs is None:
+                print("  SPLIT  %-30s %-5s -> %d new edge(s), tagged OPEN, "
+                      "but could not relabel automatically -- rename the "
+                      "legs by hand"
+                      % (room_name, kind.upper(), len(drawn)))
+                continue
+            names = ", ".join(
+                "%s%s" % (num, " (new)" if is_new else "") for num, is_new in legs)
+            print("  SPLIT  %-30s %-5s -> %s" % (room_name, kind.upper(), names))
+            for geo_index, start_pinned, end_pinned in drawn:
+                if not (start_pinned and end_pinned):
+                    print("           edge #%d has an unpinned endpoint -- "
+                          "run normalize_walls.FCMacro next to split and "
+                          "pin the T-junction it lands on" % geo_index)
+
+    if total_left:
+        print("\nYOUR CALL -- %d corridor-pattern room(s) left untouched:"
+              % total_left)
+        for story in report["stories"]:
+            for room_name, reason in story["left_alone"]:
+                print("    %-20s %-30s %s"
+                      % (story["name"], room_name, reason))
+
+    if report["errors"]:
+        print("\nDOCUMENT ERRORS after the split (%d object(s)) -- "
+              "review before saving:" % len(report["errors"]))
+        for name, state in report["errors"].items():
+            print("    %-24s %s" % (name, state))
+
+    if total_split:
+        print("\nNot saved. Review the new edges and labels, save, then "
+              "run normalize_walls.FCMacro next.")
+
+
+def run():
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        FreeCAD.Console.PrintError("No active document.\n")
+        return
+
+    fb = load_fcbridge()
+    cs = load_corridor_split()
+    seed_labels = load_seed_labels()
+    missing = [n for n, m in (("fcbridge", fb), ("corridor_split", cs),
+                              ("fc_seed_labels", seed_labels)) if m is None]
+    if missing:
+        FreeCAD.Console.PrintError(
+            "Could not find %s -- point FreeCAD's macro location at this "
+            "checkout,\nor set FREECAD_BRIDGE to it.\n" % ", ".join(missing))
+        return
+
+    report = split_document(fb, cs, seed_labels, doc)
+    _print_report(report)
+
+
+run()

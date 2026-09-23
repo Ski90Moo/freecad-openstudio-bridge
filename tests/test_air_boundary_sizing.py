@@ -567,6 +567,82 @@ class PromoteDeclaredTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["kind"], "declared")
 
+    def test_declarations_are_marked_by_their_source(self):
+        """The report needs to tell a tag-derived entry (survives an
+        unattended full rebuild) from a --open-surface one (does not)."""
+        room_a, room_b = MockSpace("Room A"), MockSpace("Room B")
+        s1, s2 = MockSurface("Surface 1", room_a), \
+            MockSurface("Surface 2", room_b)
+        pair_up(s1, s2)
+        model = MockModel([s1, s2])
+
+        found, _problems = fab.promote_declared(model, [], {"Surface 1"})
+        self.assertEqual(found[0]["source"], "cli")
+
+
+class PromoteDeclaredEdgesTests(unittest.TestCase):
+    """The tag-resolved counterpart to PromoteDeclaredTests: fed
+    (surface, partner) pairs already resolved by position instead of a
+    surface name, but sharing the exact same pair-merge step -- so the
+    double-construction fix above cannot drift between the two paths."""
+
+    def test_a_tag_and_a_cli_declaration_on_the_same_pair_share_one_construction(self):
+        lobby, stair = MockSpace("004-101-LobbyReception"), \
+            MockSpace("026-S1-Stair")
+        a1, a2 = MockSurface("Surface 77", lobby), \
+            MockSurface("Surface 146", stair)
+        pair_up(a1, a2)
+        b1, b2 = MockSurface("Surface 147", stair), \
+            MockSurface("Surface 78", lobby)
+        pair_up(b1, b2)
+        model = MockModel([a1, a2, b1, b2])
+
+        cli_found, problems = fab.promote_declared(model, [], {"Surface 77"})
+        self.assertEqual(problems, [])
+        edge_found = fab.promote_declared_edges(
+            cli_found, [({"kind": "OPEN"}, [(b1, b2)])])
+
+        self.assertEqual(len(edge_found), 1)
+        keys = {(op["kind"], op["space_a"], op["space_b"])
+                for op in cli_found + edge_found}
+        self.assertEqual(len(keys), 1,
+                         "both must resolve to the same (kind, space_a, "
+                         "space_b) or group_pairs makes two constructions "
+                         "out of one pair: %s" % keys)
+        self.assertEqual(cli_found[0]["source"], "cli")
+        self.assertEqual(edge_found[0]["source"], "tag")
+
+    def test_a_surface_a_rule_already_claimed_is_skipped(self):
+        room_a, room_b = MockSpace("Room A"), MockSpace("Room B")
+        s1, s2 = MockSurface("Surface 1", room_a), \
+            MockSurface("Surface 2", room_b)
+        pair_up(s1, s2)
+        rule_op = {"kind": "mezzanine", "space_a": "Room A",
+                  "space_b": "Room B",
+                  "surface_a": "Surface 1", "surface_b": "Surface 2"}
+
+        found = fab.promote_declared_edges(
+            [rule_op], [({"kind": "OPEN"}, [(s1, s2)])])
+        self.assertEqual(found, [])
+
+    def test_every_fragment_of_a_resolved_edge_is_promoted(self):
+        """resolve_declared_edge can hand back several fragments of one
+        split wall; every one must be promoted, all to the same pair."""
+        room_a, room_b = MockSpace("Room A"), MockSpace("Room B")
+        s1, s2 = MockSurface("Surface 1", room_a), \
+            MockSurface("Surface 2", room_b)
+        pair_up(s1, s2)
+        s3, s4 = MockSurface("Surface 3", room_a), \
+            MockSurface("Surface 4", room_b)
+        pair_up(s3, s4)
+
+        found = fab.promote_declared_edges(
+            [], [({"kind": "OPEN"}, [(s1, s2), (s3, s4)])])
+
+        self.assertEqual(len(found), 2)
+        keys = {(op["kind"], op["space_a"], op["space_b"]) for op in found}
+        self.assertEqual(len(keys), 1, keys)
+
 
 # The model to check these invariants against.  BRIDGE_TEST_OSM is how CI
 # points them at the one it just built from samples/ -- without it these tests
@@ -574,7 +650,7 @@ class PromoteDeclaredTests(unittest.TestCase):
 # below, which meant they never ran anywhere but one desk.
 OSM = os.environ.get("BRIDGE_TEST_OSM") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "..", "MCP", "runs", "fptest02.osm")
+    "..", "MCP", "runs", "fptest05.osm")
 
 
 @unittest.skipUnless(os.path.exists(OSM), "built model not present")
@@ -641,22 +717,25 @@ class TestAppliedModelInvariants(unittest.TestCase):
                                0.0, construction.nameString())
 
     def test_the_fire_wall_stayed_solid(self):
-        """205 Mezzanine to the lobby and to 101c is rated, not a guardrail.
+        """205 Mezzanine to the Lobby/Reception is rated, not a guardrail.
 
         Keyed on the pair of ROOM NUMBERS, never on surface names and never on
-        full space names.  Surface names are positional: rebuilding a space
-        renumbers them, so the four names this test used to name moved to
-        entirely different walls when the roof went in, and it started
-        asserting things about the wrong geometry.
+        full space names.  Surface names are positional: a rebuild renumbers
+        them, so a test that named a surface directly would start asserting
+        things about the wrong geometry the next time the plan changed.
 
         A full space name carries the same hazard one level up.  The leading
-        index in `034-205-Mezzanine` is an export-order counter, not identity:
+        index in `033-205-MEZZANINE` is an export-order counter, not identity:
         exporting the same drawing after a room was added anywhere earlier in
         the order shifts every index after it, and this test went looking for
         a wall that was still there under a name that no longer existed.  The
         room number is the part the drawing actually fixes.
+
+        The override itself lives on the wall's own sketch edge
+        (OS_AirBoundaryOverride=SOLID), not as a --solid-surface CLI argument
+        -- see the CI workflow's own comment on why that is preferred.
         """
-        for pair in (("205", "101"), ("205", "101c")):
+        for pair in (("205", "101"),):
             faces = [s for s in self.model.getSurfaces()
                      if self.room_pair(s) == frozenset(pair)]
             self.assertTrue(faces, "no wall between rooms %s and %s" % pair)
@@ -770,6 +849,175 @@ class RebuildRiskTests(unittest.TestCase):
                 surface.setConstruction(plain)
         self.assertEqual(self.uog.air_boundaries_at_risk(model, ["Room 1"]),
                          {})
+
+
+class ResolveDeclaredEdgeTests(unittest.TestCase):
+    """The built surface(s) a tagged FreeCAD wall edge becomes.
+
+    Matched by the pair's Space objects, then by position along the tagged
+    edge's own line -- never by name -- so this is what makes a hand-made
+    coupling survive a full rebuild instead of needing --solid-surface /
+    --open-surface re-typed by hand every time (see RebuildRiskTests above,
+    and the update_osm_geometry.air_boundaries_at_risk docstring for the
+    incident that motivated it).
+
+    Spaces here are bare Space(model) objects carrying only the wall
+    surfaces each test needs, not full rooms -- resolve_declared_edge only
+    ever looks at Wall-type surfaces and their adjacency, and a bare Space
+    has an identity transformation (measured), so a surface's own vertices
+    can be written directly in building coordinates.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import openstudio
+        except ImportError as exc:      # pragma: no cover
+            raise unittest.SkipTest("openstudio not importable: %s" % exc)
+        cls.os = openstudio
+
+    def space(self, model, name):
+        space = self.os.model.Space(model)
+        space.setName(name)
+        return space
+
+    def wall(self, model, space, x, y0, y1, z0, z1):
+        pts = self.os.Point3dVector()
+        for x_, y_, z_ in ((x, y0, z0), (x, y1, z0), (x, y1, z1), (x, y0, z1)):
+            pts.append(self.os.Point3d(x_, y_, z_))
+        surface = self.os.model.Surface(pts, model)
+        surface.setSpace(space)
+        surface.setSurfaceType("Wall")
+        return surface
+
+    def entry(self, space):
+        return {"space_name": space.nameString()}
+
+    def index_at(self, *space_ids, elevation_m=0.0):
+        return {sid: ({"elevation_m": elevation_m},) for sid in space_ids}
+
+    def test_a_simple_pair_matches_by_position(self):
+        model = self.os.model.Model()
+        left, right = self.space(model, "Left"), self.space(model, "Right")
+        a = self.wall(model, left, 4.0, 0.0, 4.0, 0.0, 3.0)
+        b = self.wall(model, right, 4.0, 4.0, 0.0, 0.0, 3.0)
+        a.setAdjacentSurface(b)
+
+        fcmap = {"left": self.entry(left), "right": self.entry(right)}
+        index = self.index_at("left", "right")
+        edge = {"kind": "OPEN", "space_a": "left", "space_b": "right",
+                "vertices": [[4.0, 0.0], [4.0, 4.0]]}
+
+        matches, problems = fab.resolve_declared_edge(model, fcmap, index,
+                                                       edge)
+        self.assertEqual(problems, [])
+        self.assertEqual(len(matches), 1)
+        surface, partner = matches[0]
+        self.assertEqual(surface.handle(), a.handle())
+        self.assertEqual(partner.handle(), b.handle())
+
+    def test_every_fragment_of_a_split_wall_is_matched(self):
+        """What a real intersectSurfaces split into more than one piece
+        looks like from here on: two co-planar surface pairs at the same
+        line, one covering half the tagged edge's span and one the other."""
+        model = self.os.model.Model()
+        left, right = self.space(model, "Left"), self.space(model, "Right")
+        fragments = []
+        for y0, y1 in ((0.0, 4.0), (4.0, 8.0)):
+            a = self.wall(model, left, 4.0, y0, y1, 0.0, 3.0)
+            b = self.wall(model, right, 4.0, y1, y0, 0.0, 3.0)
+            a.setAdjacentSurface(b)
+            fragments.append(a)
+
+        fcmap = {"left": self.entry(left), "right": self.entry(right)}
+        index = self.index_at("left", "right")
+        edge = {"kind": "OPEN", "space_a": "left", "space_b": "right",
+                "vertices": [[4.0, 0.0], [4.0, 8.0]]}
+
+        matches, problems = fab.resolve_declared_edge(model, fcmap, index,
+                                                       edge)
+        self.assertEqual(problems, [])
+        self.assertEqual({s.handle() for s, _p in matches},
+                         {f.handle() for f in fragments})
+
+    def test_a_second_wall_between_the_same_pair_is_not_matched(self):
+        """113 Mezzanine <-> Lobby shares six surfaces in the real building
+        -- tagging one line must not sweep in a different wall between the
+        same two rooms."""
+        model = self.os.model.Model()
+        left, right = self.space(model, "Left"), self.space(model, "Right")
+        tagged_a = self.wall(model, left, 4.0, 0.0, 4.0, 0.0, 3.0)
+        tagged_b = self.wall(model, right, 4.0, 4.0, 0.0, 0.0, 3.0)
+        tagged_a.setAdjacentSurface(tagged_b)
+        # A second, unrelated wall between the same two rooms, elsewhere in
+        # plan -- along y = 20, not the tagged line at y = 0..4.
+        other_a = self.wall(model, left, 4.0, 20.0, 24.0, 0.0, 3.0)
+        other_b = self.wall(model, right, 4.0, 24.0, 20.0, 0.0, 3.0)
+        other_a.setAdjacentSurface(other_b)
+
+        fcmap = {"left": self.entry(left), "right": self.entry(right)}
+        index = self.index_at("left", "right")
+        edge = {"kind": "OPEN", "space_a": "left", "space_b": "right",
+                "vertices": [[4.0, 0.0], [4.0, 4.0]]}
+
+        matches, problems = fab.resolve_declared_edge(model, fcmap, index,
+                                                       edge)
+        self.assertEqual(problems, [])
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0][0].handle(), tagged_a.handle())
+
+    def test_two_stacked_stories_share_a_line_but_not_a_story(self):
+        """contains()'s own height bound is deliberately generous -- the
+        base-elevation check is what stops this from also matching the
+        upper storey's identical wall."""
+        model = self.os.model.Model()
+        lower_l = self.space(model, "Lower Left")
+        lower_r = self.space(model, "Lower Right")
+        upper_l = self.space(model, "Upper Left")
+        upper_r = self.space(model, "Upper Right")
+        lower_a = self.wall(model, lower_l, 4.0, 0.0, 4.0, 0.0, 3.0)
+        lower_b = self.wall(model, lower_r, 4.0, 4.0, 0.0, 0.0, 3.0)
+        lower_a.setAdjacentSurface(lower_b)
+        upper_a = self.wall(model, upper_l, 4.0, 0.0, 4.0, 3.0, 6.0)
+        upper_b = self.wall(model, upper_r, 4.0, 4.0, 0.0, 3.0, 6.0)
+        upper_a.setAdjacentSurface(upper_b)
+
+        fcmap = {"lower-l": self.entry(lower_l), "lower-r": self.entry(lower_r),
+                 "upper-l": self.entry(upper_l), "upper-r": self.entry(upper_r)}
+        index = self.index_at("lower-l", "lower-r", elevation_m=0.0)
+        index.update(self.index_at("upper-l", "upper-r", elevation_m=3.0))
+        edge = {"kind": "OPEN", "space_a": "lower-l", "space_b": "lower-r",
+                "vertices": [[4.0, 0.0], [4.0, 4.0]]}
+
+        matches, problems = fab.resolve_declared_edge(model, fcmap, index,
+                                                       edge)
+        self.assertEqual(problems, [])
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0][0].handle(), lower_a.handle())
+
+    def test_a_room_id_absent_from_fcmap_is_a_problem_not_a_crash(self):
+        model = self.os.model.Model()
+        edge = {"kind": "OPEN", "space_a": "ghost", "space_b": "also-ghost",
+                "vertices": [[0.0, 0.0], [4.0, 0.0]]}
+
+        matches, problems = fab.resolve_declared_edge(model, {}, {}, edge)
+        self.assertEqual(matches, [])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("not in this build's fcmap", problems[0])
+
+    def test_no_wall_at_all_is_a_problem_not_a_crash(self):
+        model = self.os.model.Model()
+        left, right = self.space(model, "Left"), self.space(model, "Right")
+        fcmap = {"left": self.entry(left), "right": self.entry(right)}
+        index = self.index_at("left", "right")
+        edge = {"kind": "OPEN", "space_a": "left", "space_b": "right",
+                "vertices": [[4.0, 0.0], [4.0, 4.0]]}
+
+        matches, problems = fab.resolve_declared_edge(model, fcmap, index,
+                                                       edge)
+        self.assertEqual(matches, [])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("no built wall matched", problems[0])
 
 
 if __name__ == "__main__":

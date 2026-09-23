@@ -16,7 +16,7 @@ Run under FreeCAD's bundled Python, either into a new document:
 or -- preferred -- back into the source document the plan was traced in:
 
     "C:/Program Files/FreeCAD 1.1/bin/python.exe" fc_import_surfaces.py \
-        surfaces.json --into FloorplanTest-02.FCStd
+        surfaces.json --into FloorplanTest-05.FCStd
 
 Every OpenStudio surface becomes its own selectable Part::Feature face
 carrying OS_SurfaceName / OS_Handle / OS_SpaceName / OS_SurfaceType /

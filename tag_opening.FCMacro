@@ -102,15 +102,60 @@ def edge_index(sketch):
 
 
 def selected_sketch_edges():
-    """(sketch, [geometry index]) from a selection made inside the editor."""
+    """(sketch, [geometry index]) from a selection made inside the editor.
+
+    A selection made *while editing* a sketch names an edge by its raw
+    GeoId, one-based ("Edge21" is sketch.Geometry[20]) -- confirmed
+    directly against the Sketcher Elements panel, which prints the same
+    row's GeoId alongside its Edge name (e.g. "Edge59#ID58"): the two
+    always differ by exactly one, for construction geometry exactly the
+    same as real geometry, with no skipping.
+
+    This used to go through fcbridge.shape_edge_to_geometry_index (a
+    Shape.Edges-ordinal lookup, which does skip construction geometry)
+    instead, on the assumption that an edit-mode "EdgeN" selection means
+    the same thing as Shape.Edges' own Nth entry. It does not -- that
+    assumption held only by coincidence on a sketch with no construction
+    geometry ahead of the target edge, which every sketch tested until
+    this one happened to be. Once real construction geometry existed
+    earlier in the list (this session's own External Geometry promotion
+    work), the two numberings diverged and every edge selected past that
+    point resolved to the wrong element, or (once Shape.Edges also carried
+    a stray un-demoted entry) to no element at all -- both measured
+    directly on FloorplanTest-05, Level 2. Shape.Edges is what a *closed*
+    sketch's pickable edges resolve against in the 3D view; it was never
+    the right lookup for a selection made inside the editor, which both
+    tag_airboundary.FCMacro and tag_opening.FCMacro exclusively are (see
+    each macro's own header comment).
+
+    edge_index() above is unrelated -- it resolves by midpoint position,
+    not by ordinal, for a different purpose (matching a drawn opening
+    outline's host wall), and needed no change.
+
+    A selected ordinal beyond the sketch's current geometry count -- the
+    sketch changed since the click, or a stale FreeCAD process still held
+    an older document -- is skipped with a warning printed, not silently
+    dropped or left to crash the macro with an IndexError.
+    """
     for item in FreeCADGui.Selection.getSelectionEx():
         obj = item.Object
         if obj.TypeId != "Sketcher::SketchObject":
             continue
         indices = []
         for name in item.SubElementNames:
-            if name.startswith("Edge"):
-                indices.append(int(name[4:]) - 1)
+            if not name.startswith("Edge"):
+                continue
+            geo_index = int(name[4:]) - 1
+            if geo_index < 0 or geo_index >= len(obj.Geometry):
+                FreeCAD.Console.PrintWarning(
+                    "Could not resolve %s on %r -- the sketch's geometry "
+                    "may have changed since this was selected (or this "
+                    "FreeCAD process has a stale copy of the document).\n"
+                    "Deselect, click the edge again, and re-run; if that "
+                    "keeps failing, close FreeCAD entirely (not just the "
+                    "document) and reopen.\n" % (name, obj.Label))
+                continue
+            indices.append(geo_index)
         if indices:
             return obj, indices
     return None, None
@@ -329,18 +374,28 @@ def report_document(doc):
 PENDING_PROP = "OS_PendingType"
 
 
-def load_exporter():
-    """The bridge module, for the classifier and the subsurface join."""
+def _bridge_module(name):
+    """Import `name` from this checkout (or FREECAD_BRIDGE), or None."""
     for folder in (os.path.dirname(os.path.abspath(__file__)),
                    os.environ.get("FREECAD_BRIDGE", "")):
         if not folder:
             continue
-        if os.path.exists(os.path.join(folder, "fc_export_openings.py")):
+        if os.path.exists(os.path.join(folder, name + ".py")):
             if folder not in sys.path:
                 sys.path.insert(0, folder)
-            import fc_export_openings
-            return fc_export_openings
+            import importlib
+            return importlib.import_module(name)
     return None
+
+
+def load_exporter():
+    """The bridge module, for the classifier and the subsurface join."""
+    return _bridge_module("fc_export_openings")
+
+
+def load_fcbridge():
+    """The shared bridge module, for the Edge-ordinal -> Geometry-index map."""
+    return _bridge_module("fcbridge")
 
 
 def mark_pending(doc):
@@ -409,6 +464,13 @@ def run():
         return
     if FreeCADGui is None:
         FreeCAD.Console.PrintError("This macro needs the FreeCAD GUI.\n")
+        return
+
+    fcbridge = load_fcbridge()
+    if fcbridge is None:
+        FreeCAD.Console.PrintError(
+            "Could not find fcbridge.py -- point FreeCAD's macro location at "
+            "this checkout,\nor set FREECAD_BRIDGE to it.\n")
         return
 
     sketch, indices = selected_sketch_edges()

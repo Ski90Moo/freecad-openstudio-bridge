@@ -7,8 +7,8 @@
   "required": ["schema_version", "units", "stories"],
   "properties": {
     "schema_version": {
-      "enum": [1, 2],
-      "description": "1 is a flat-topped plan. 2 may also carry a roof, the per-space solids it produces, and the story an attic invents. Every version 1 plan is a valid version 2 plan; the reverse is not true, so a reader that does not understand `solid` must refuse a version 2 file rather than build the flat model by accident."
+      "enum": [1, 2, 3, 4],
+      "description": "1 is a flat-topped plan. 2 may also carry a roof, the per-space solids it produces, and the story an attic invents. 3 may also carry air_boundary_overrides. 4 lets an ordinary (non-roofed) room's walls be pre-split and pre-paired at their true 2D wall-centerline network + per-room height, the same way a roof's attic floor/ceiling mirror pairs already were, via a `solid` block synthesized directly instead of only from a roof. Every earlier version's plan is a valid later-version plan; the reverse is not true, so a reader that does not understand a field new to a later version must refuse rather than build the wrong model by accident."
     },
     "source_document": {
       "type": "string",
@@ -32,6 +32,11 @@
     "roof": {
       "$ref": "#/$defs/roof",
       "description": "Present only when the document declares a roof. Schema version 2."
+    },
+    "air_boundary_overrides": {
+      "type": "array",
+      "description": "Hand-made SOLID/OPEN declarations, tagged in FreeCAD directly on a wall-centerline edge (tag_airboundary.FCMacro) rather than named against a previously built OpenStudio surface. Re-derived fresh on every export, so the drawing stays the source of truth across a full rebuild. Schema version 3.",
+      "items": {"$ref": "#/$defs/air_boundary_override"}
     }
   },
   "$defs": {
@@ -95,7 +100,7 @@
         },
         "solid": {
           "$ref": "#/$defs/solid",
-          "description": "Present when the roof gave this space a shape a prism cannot describe. When it is here it is the geometry: vertices and height_m still describe the footprint and are still what the area check and the space-matching use, but they no longer say what gets built."
+          "description": "Present when the roof gave this space a shape a prism cannot describe, or (schema 4) when an ordinary room's walls were pre-split and pre-paired against its 2D neighbours instead of being left to intersectSurfaces. When it is here it is the geometry: vertices and height_m still describe the footprint and are still what the area check and the space-matching use, but they no longer say what gets built."
         }
       }
     },
@@ -105,8 +110,8 @@
       "required": ["source", "surfaces"],
       "properties": {
         "source": {
-          "enum": ["roof-extend", "roof-attic"],
-          "description": "Which method produced this. roof-extend raised an existing room to meet the roof; roof-attic is the roof solid itself, become a space."
+          "enum": ["roof-extend", "roof-attic", "wall-network"],
+          "description": "Which method produced this. roof-extend raised an existing room to meet the roof; roof-attic is the roof solid itself, become a space; wall-network (schema 4) is an ordinary room whose walls were pre-split and pre-paired against its 2D neighbours (fc_walls.py) instead of being left to intersectSurfaces."
         },
         "roof_object": {
           "type": "string",
@@ -133,8 +138,47 @@
                   "maxItems": 3,
                   "items": {"type": "number"}
                 }
+              },
+              "match_id": {
+                "type": "string",
+                "description": "Opaque per-build correlation key: two surfaces sharing one are the same physical boundary and are paired with setAdjacentSurface before intersectSurfaces runs. Not stable across exports/builds; never written to the .osm."
+              },
+              "match_space_id": {
+                "type": "string",
+                "description": "OS_SpaceId of the room this surface's match_id is expected to pair with. Present on a wall-network pre-pair; a roof-mirror pair may omit it."
               }
             }
+          }
+        }
+      }
+    },
+    "air_boundary_override": {
+      "type": "object",
+      "description": "One tagged wall-centerline edge, resolved at export time to the pair of rooms it separates and its own plan line -- never to an OpenStudio surface name, which is positional and does not survive a full rebuild.",
+      "required": ["kind", "space_a", "space_b", "vertices"],
+      "properties": {
+        "kind": {
+          "enum": ["SOLID", "OPEN"],
+          "description": "SOLID: real construction (a fire wall, a rated separation), overriding any rule that would otherwise flag this wall as an air boundary. OPEN: force an air boundary here, overriding any rule."
+        },
+        "space_a": {
+          "type": "string",
+          "description": "OS_SpaceId of the room on one side of the tagged edge."
+        },
+        "space_b": {
+          "type": "string",
+          "description": "OS_SpaceId of the room on the other side."
+        },
+        "vertices": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "The tagged edge's two endpoints, metres, same plan frame as a space's own vertices. Used to find the built surface(s) by position after intersectSurfaces may have split the wall, and to disambiguate when the same pair of rooms shares more than one wall.",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {"type": "number"}
           }
         }
       }

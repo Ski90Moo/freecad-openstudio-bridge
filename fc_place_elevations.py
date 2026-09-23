@@ -12,7 +12,7 @@ Run under FreeCAD's bundled Python, after elevations/facade_images.py has cut
 the crops:
 
     "C:/Program Files/FreeCAD 1.1/bin/python.exe" fc_place_elevations.py \
-        FloorplanTest-02.FCStd elevations/facades/facade_images.json
+        FloorplanTest-05.FCStd elevations/facades/facade_images.json
 
 An image plane placed by hand carries whatever scale and offset error the hand
 had.  Measured against the vector plans, the one placed by hand for this

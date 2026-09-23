@@ -1,0 +1,333 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the FreeCAD-OpenStudio bridge contributors
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.  See LICENSE for the full text.
+
+# Declare a wall SOLID (never an air boundary, whatever a rule says) or OPEN
+# (always one) by tagging its centerline edge in the floor-plan sketch,
+# instead of naming a built OpenStudio surface with --solid-surface /
+# --open-surface.
+#
+# Run from inside FreeCAD (Macro -> Macros... -> Execute) with one or more
+# wall-centerline edges selected while editing a floor-plan sketch.  With
+# nothing selected, it lists every override already in the document.
+#
+# --solid-surface and --open-surface (find_air_boundaries.py) key a
+# declaration on an OpenStudio surface *name*, and surface names are
+# positional -- a full rebuild reassigns them all, and a few land
+# differently every time (see IDENTITY.md).  A hand-made coupling was lost
+# that way once, silently: the wall read solid, the model still built, and
+# the two zones simply stopped exchanging air.
+#
+# This tag rides on the sketch edge itself, exactly the way tag_opening.
+# FCMacro overrides a window's type: a Part::GeometryStringExtension named
+# OS_AirBoundaryOverride, which survives a save, a drag and a new
+# constraint, and follows its element when other geometry in the sketch is
+# deleted.  fc_export_floorplan.py resolves it at export time -- before any
+# OpenStudio geometry exists -- to the pair of rooms the edge separates (by
+# their stable OS_SpaceId, not by name) and the edge's own plan line, and
+# find_air_boundaries.py finds the built wall(s) for it afterwards by that
+# position, the same way surface_identity.py already recognises a wall
+# across a rebuild.  So this survives a full rebuild with nothing to retype.
+#
+# Choosing "(no override)" removes the tag again.
+
+import os
+import sys
+
+import FreeCAD
+
+try:
+    import FreeCADGui
+    from PySide import QtGui
+except ImportError:  # pragma: no cover - only reachable headless
+    FreeCADGui = None
+
+KINDS = ["SOLID", "OPEN"]
+CLEAR = "(no override)"
+
+
+def _bridge_module(name):
+    """Import `name` from this checkout (or FREECAD_BRIDGE), or None."""
+    for folder in (os.path.dirname(os.path.abspath(__file__)),
+                   os.environ.get("FREECAD_BRIDGE", "")):
+        if not folder:
+            continue
+        if os.path.exists(os.path.join(folder, name + ".py")):
+            if folder not in sys.path:
+                sys.path.insert(0, folder)
+            import importlib
+            return importlib.import_module(name)
+    return None
+
+
+def load_fcbridge():
+    """The shared bridge module, for the tag itself and its resolution."""
+    return _bridge_module("fcbridge")
+
+
+def load_exporter():
+    """The floorplan exporter, for the immediate resolution preview only --
+    tagging works without it, since the tag alone needs nothing more than
+    fcbridge."""
+    return _bridge_module("fc_export_floorplan")
+
+
+def tag_of(facade, ext_name):
+    if not facade.hasExtensionOfName(ext_name):
+        return ""
+    return (facade.getExtensionOfName(ext_name).Value or "").strip()
+
+
+def set_tag(fcbridge, sketch, indices, kind):
+    """Write (or clear) the override on the given geometry indices."""
+    import Part
+    facades = sketch.GeometryFacadeList
+    for index in indices:
+        if kind:
+            extension = Part.GeometryStringExtension()
+            extension.Name = fcbridge.AIR_BOUNDARY_EXT_NAME
+            extension.Value = kind
+            facades[index].setExtension(extension)
+        elif facades[index].hasExtensionOfName(fcbridge.AIR_BOUNDARY_EXT_NAME):
+            facades[index].deleteExtensionOfName(
+                fcbridge.AIR_BOUNDARY_EXT_NAME)
+    sketch.GeometryFacadeList = facades
+
+
+def selected_sketch_edges():
+    """(sketch, [geometry index]) from a selection made inside the editor.
+
+    A selection made *while editing* a sketch names an edge by its raw
+    GeoId, one-based ("Edge21" is sketch.Geometry[20]) -- confirmed
+    directly against the Sketcher Elements panel, which prints the same
+    row's GeoId alongside its Edge name (e.g. "Edge59#ID58"): the two
+    always differ by exactly one, for construction geometry exactly the
+    same as real geometry, with no skipping.
+
+    This used to go through fcbridge.shape_edge_to_geometry_index (a
+    Shape.Edges-ordinal lookup, which does skip construction geometry)
+    instead, on the assumption that an edit-mode "EdgeN" selection means
+    the same thing as Shape.Edges' own Nth entry. It does not -- that
+    assumption held only by coincidence on a sketch with no construction
+    geometry ahead of the target edge, which every sketch tested until
+    this one happened to be. Once real construction geometry existed
+    earlier in the list (this session's own External Geometry promotion
+    work), the two numberings diverged and every edge selected past that
+    point resolved to the wrong element, or (once Shape.Edges also carried
+    a stray un-demoted entry) to no element at all -- both measured
+    directly on FloorplanTest-05, Level 2. Shape.Edges is what a *closed*
+    sketch's pickable edges resolve against in the 3D view; it was never
+    the right lookup for a selection made inside the editor, which both
+    tag_airboundary.FCMacro and tag_opening.FCMacro exclusively are (see
+    each macro's own header comment).
+
+    A selected ordinal beyond the sketch's current geometry count -- the
+    sketch changed since the click, or a stale FreeCAD process still held
+    an older document -- is skipped with a warning printed, not silently
+    dropped or left to crash the macro with an IndexError.
+    """
+    for item in FreeCADGui.Selection.getSelectionEx():
+        obj = item.Object
+        if obj.TypeId != "Sketcher::SketchObject":
+            continue
+        indices = []
+        for name in item.SubElementNames:
+            if not name.startswith("Edge"):
+                continue
+            geo_index = int(name[4:]) - 1
+            if geo_index < 0 or geo_index >= len(obj.Geometry):
+                FreeCAD.Console.PrintWarning(
+                    "Could not resolve %s on %r -- the sketch's geometry "
+                    "may have changed since this was selected (or this "
+                    "FreeCAD process has a stale copy of the document).\n"
+                    "Deselect, click the edge again, and re-run; if that "
+                    "keeps failing, close FreeCAD entirely (not just the "
+                    "document) and reopen.\n" % (name, obj.Label))
+                continue
+            indices.append(geo_index)
+        if indices:
+            return obj, indices
+    return None, None
+
+
+def tally(fcbridge, sketch):
+    """{kind: element count}, for reporting what is tagged.
+
+    There is no UI anywhere in FreeCAD for a geometry extension, so a tagged
+    edge looks exactly like an untagged one -- this is the only way to see
+    them without exporting.
+    """
+    counts = {}
+    for kind in fcbridge.element_values(
+            sketch, fcbridge.AIR_BOUNDARY_EXT_NAME).values():
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+def describe(counts):
+    if not counts:
+        return "nothing tagged"
+    return ", ".join("%s %d" % item for item in sorted(counts.items()))
+
+
+def report_document(fcbridge, doc):
+    """List every tagged edge, for when there is nothing selected."""
+    lines = []
+    for sketch in fcbridge.story_sketches(doc):
+        counts = tally(fcbridge, sketch)
+        if counts:
+            lines.append("  %-22s %s" % (sketch.Label, describe(counts)))
+    if lines:
+        FreeCAD.Console.PrintMessage(
+            "Air-boundary overrides in this document:\n%s\n"
+            % "\n".join(lines))
+    else:
+        FreeCAD.Console.PrintMessage(
+            "No wall edge in this document carries an air-boundary "
+            "override.\n")
+
+
+def describe_room(story, space_id):
+    for space in story["spaces"]:
+        if space["id"] == space_id:
+            return "%s | %s" % (space["room_number"], space["name"])
+    return space_id[:8]
+
+
+def resolve_now(fcbridge, exporter, sketch):
+    """Resolve every tag in `sketch` the way the next export will, right
+    now -- so a mistake (tagged the exterior boundary, tagged a dangling
+    stub) is caught in this session rather than three steps later.
+
+    Returns (story, overrides, deferred_count, problems), or
+    (None, None, None, why) if the preview could not run.  Tagging itself
+    never depends on this: it only needs fcbridge, not the exporter.
+
+    An edge against an Open to Below void resolves only once every story is
+    known (resolve_cross_story_overrides), which this does not attempt --
+    running build_story on every sketch in the document just to preview one
+    edit would mint ids and touch state well beyond what was tagged.  Those
+    are reported as a count instead: real, but "not yet checked here."
+    """
+    if exporter is None:
+        return None, None, None, ("could not find fc_export_floorplan.py "
+                                  "to preview")
+    doc = sketch.Document
+    sketches = fcbridge.story_sketches(doc)
+    if sketch not in sketches:
+        return None, None, None, ("%r is not flagged OS_Include, so it is "
+                                  "never exported" % sketch.Label)
+    labels = fcbridge.room_labels(doc)
+    (story, problems, _orphans, _minted, _added, _relabeled, _skipped,
+     _height_overrides, boundary_overrides, boundary_deferred,
+     _wall_paired, _wall_exterior, _wall_refused) = exporter.build_story(
+        sketch, labels, sketches)
+    ab_problems = [p for p in problems
+                   if fcbridge.AIR_BOUNDARY_EXT_NAME in p]
+    return story, boundary_overrides, len(boundary_deferred), ab_problems
+
+
+def ask(current):
+    choices = [CLEAR] + KINDS
+    index = choices.index(current) if current in choices else 0
+    kind, ok = QtGui.QInputDialog.getItem(
+        None, "Air-boundary override",
+        "Declaration for the selected wall edge(s).\n"
+        "SOLID: never an air boundary here, whatever a rule says.\n"
+        "OPEN: always one, whatever a rule says.\n"
+        "\"%s\" defers entirely to the rules in find_air_boundaries.py."
+        % CLEAR,
+        choices, index, False)
+    if not ok:
+        return None, False
+    return ("" if kind == CLEAR else kind), True
+
+
+def run():
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        FreeCAD.Console.PrintError("No active document.\n")
+        return
+    if FreeCADGui is None:
+        FreeCAD.Console.PrintError("This macro needs the FreeCAD GUI.\n")
+        return
+
+    fcbridge = load_fcbridge()
+    if fcbridge is None:
+        FreeCAD.Console.PrintError(
+            "Could not find fcbridge.py -- point FreeCAD's macro location "
+            "at this checkout,\nor set FREECAD_BRIDGE to it.\n")
+        return
+
+    sketch, indices = selected_sketch_edges()
+    if sketch is None:
+        # Not an error: with nothing to act on, say what is already tagged.
+        report_document(fcbridge, doc)
+        FreeCAD.Console.PrintMessage(
+            "\nTo change one: select the wall-centerline edge(s) of a "
+            "floor-plan sketch\nwhile editing it, then run this again.\n")
+        return
+
+    facades = sketch.GeometryFacadeList
+    ext = fcbridge.AIR_BOUNDARY_EXT_NAME
+    current = {tag_of(facades[i], ext) for i in indices if i < len(facades)}
+    before = tally(fcbridge, sketch)
+    kind, ok = ask(current.pop() if len(current) == 1 else "")
+    if not ok:
+        return
+
+    set_tag(fcbridge, sketch, indices, kind)
+    doc.recompute()
+    after = tally(fcbridge, sketch)
+
+    what = ("Tagged %d edge(s) as %s" % (len(indices), kind) if kind
+            else "Cleared the override on %d edge(s)" % len(indices))
+    lines = ["%s." % what,
+             "  %-22s was  %s" % (sketch.Label, describe(before)),
+             "  %-22s now  %s" % ("", describe(after))]
+
+    exporter = load_exporter()
+    story, boundary_overrides, deferred_count, ab_problems = resolve_now(
+        fcbridge, exporter, sketch)
+    lines.append("")
+    if story is None:
+        lines.append("(could not preview the resolution: %s)" % ab_problems)
+    else:
+        if boundary_overrides:
+            lines.append("Resolves right now as:")
+            for o in boundary_overrides:
+                lines.append("  %-5s %s  ->  %s"
+                             % (o["kind"], describe_room(story, o["space_a"]),
+                                describe_room(story, o["space_b"])))
+        if deferred_count:
+            lines.append(
+                "%d edge(s) border an Open to Below region -- resolved "
+                "against the room reaching\nthrough it on export, not "
+                "previewed here." % deferred_count)
+        if ab_problems:
+            lines.append("")
+            lines.append("NOT resolved -- fix before exporting:")
+            for p in ab_problems:
+                lines.append(p)
+        if not boundary_overrides and not deferred_count and not ab_problems:
+            lines.append("Nothing left tagged in this sketch.")
+
+    lines.append("")
+    lines.append("Nothing is saved yet -- Ctrl+S.  The override reaches the "
+                 "model only when")
+    lines.append("fc_export_floorplan.py and build_osm_geometry.py / "
+                 "update_osm_geometry.py")
+    lines.append("run over the saved file.")
+    FreeCAD.Console.PrintMessage("\n".join(lines) + "\n")
+
+    if before == after:
+        FreeCAD.Console.PrintWarning(
+            "That did not change anything -- the selected edge(s) already "
+            "read that way.\n")
+
+
+run()

@@ -11,7 +11,7 @@
 Run under FreeCAD's bundled Python:
 
     "C:/Program Files/FreeCAD 1.1/bin/python.exe" fc_export_shading.py \
-        FloorplanTest-02.FCStd --out shading.json
+        FloorplanTest-05.FCStd --out shading.json
 
 **A canopy is traced in plan, not in elevation.**  That is the one place this
 differs from openings, and it is not an arbitrary choice: a canopy is a

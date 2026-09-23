@@ -130,18 +130,18 @@ That is right for a recovered orphan and is never silent.
 `update` refuses to run:
 
 ```
-No fptest02.fcmap.json -- this model was not built by the bridge, so there is
+No fptest05.fcmap.json -- this model was not built by the bridge, so there is
 no id mapping to diff against.
 ```
 
 A good error, but the recovery is "find the file". If it is genuinely gone, all
-37 space identities are gone with it, and the next `build` makes new spaces —
+36 space identities are gone with it, and the next `build` makes new spaces —
 taking their HVAC. **This is the weakest point in the current design**, and the
 reason the deferred work below is worth doing.
 
-Note the asymmetry it creates: hand someone `fptest02.osm` on its own and its
-28 subsurfaces and 4 canopies can each say which drawn outline they came from.
-Its 37 spaces cannot.
+Note the asymmetry it creates: hand someone `fptest05.osm` on its own and its
+28 subsurfaces and 5 shading surfaces can each say which drawn outline they
+came from. Its 36 spaces cannot.
 
 ### An outline is retyped
 

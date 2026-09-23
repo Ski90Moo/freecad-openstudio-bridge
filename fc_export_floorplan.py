@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import FreeCAD  # noqa: E402
 import fc_roof  # noqa: E402
+import fc_walls  # noqa: E402
 import fcbridge as fb  # noqa: E402
 
 # 2 adds the roof: an optional `roof` block, an optional `solid` on any space
@@ -38,7 +39,15 @@ import fcbridge as fb  # noqa: E402
 # invents.  A version 1 plan is a valid version 2 plan -- the fields are all
 # additions -- but the reverse is not true, and a builder that ignored `solid`
 # would quietly produce the flat-roofed model instead of the one asked for.
-SCHEMA_VERSION = 2
+# 3 adds the optional `air_boundary_overrides` block: hand-made SOLID/OPEN
+# declarations tagged directly on a wall-centerline edge, re-derived fresh on
+# every export rather than named against a previous build's OpenStudio
+# surfaces -- see fcbridge.air_boundary_overrides.
+# 4 lets an ordinary (non-roofed) room's walls be pre-split and pre-paired at
+# their true 2D wall-centerline network + per-room height, the same way a
+# roof's attic floor/ceiling mirror pairs already were, via a `solid` block
+# synthesized directly instead of only from a roof -- see fc_walls.py.
+SCHEMA_VERSION = 4
 
 # A storey outside this range is a units mistake, not a building.  The story
 # properties are App::PropertyLength now, so a bound expression carries its own
@@ -84,7 +93,7 @@ def build_story(sketch, labels, sketches):
                                                                 sketch)
 
     story_name = getattr(sketch, "OS_StoryName", "") or sketch.Label
-    problems = []
+    problems = list(fb.wall_network_problems(sketch))
     for face in unlabeled:
         problems.append(
             "  UNLABELED room in %r: %.1f m2 at centroid %s"
@@ -100,6 +109,7 @@ def build_story(sketch, labels, sketches):
         )
 
     story_height = round(fb.story_height_m(sketch), 6)
+    story_elevation = round(fb.story_elevation_m(sketch), 6)
     if not MIN_STORY_M <= story_height <= MAX_STORY_M:
         hint = ""
         if MIN_STORY_M <= story_height / 1000.0 <= MAX_STORY_M:
@@ -113,11 +123,19 @@ def build_story(sketch, labels, sketches):
 
     spaces, minted, added_props, relabeled, skipped, overrides = \
         [], 0, 0, 0, [], []
+    face_space_id = {}
+    space_faces = {}
     for face, label in pairs:
-        relabeled += 1 if fb.sync_label_display(label) else 0
         if fb.is_skip_label(label):
+            # Not relabeled: SKIP's whole point is a repeatable, generic
+            # marker, so its drawn text is deliberately not unique across
+            # regions -- syncing Label to it would just chase FreeCAD's own
+            # uniqueness suffix forever, re-saving the document on every
+            # export for nothing. Measured directly: two "SKIP | open to
+            # below" voids left the sample resaving on every single run.
             skipped.append((label.Label, fb.area_m2(face)))
             continue
+        relabeled += 1 if fb.sync_label_display(label) else 0
         space_id, was_minted = fb.get_or_mint_space_id(label)
         minted += 1 if was_minted else 0
         added_props += 1 if fb.ensure_height_prop(label) else 0
@@ -132,6 +150,8 @@ def build_story(sketch, labels, sketches):
             "area_m2": fb.area_m2(face),
             "vertices": fb.face_polygon_m(face, sketch),
         }
+        face_space_id[face] = space_id
+        space_faces[space_id] = face
 
         height = fb.label_height_m(label)
         if height is not None and height <= 0:
@@ -147,15 +167,34 @@ def build_story(sketch, labels, sketches):
 
     spaces.sort(key=natural_key)
 
+    # Pre-split and pre-pair ordinary walls against their true 2D neighbours
+    # before anything else reads `spaces` -- air_boundary_overrides below
+    # doesn't need this, but fc_roof.apply() (main(), after every build_story
+    # call has returned) does need to run after it: a roofed space's own
+    # solid unconditionally overwrites whatever is set here, which is the
+    # only "is this room roofed" check this needs -- call order, not a flag.
+    wall_paired, wall_exterior, wall_refused = fc_walls.synthesize_story_solids(
+        fb, sketch, faces, face_space_id, spaces, space_faces,
+        story_elevation, story_height)
+
+    # A SKIP-ed or unlabeled face has no entry above -- resolved against the
+    # same face_space_id, not a filtered copy.  A tag against one is not
+    # necessarily a mistake (see boundary_deferred below), so this is not
+    # where every such case becomes a problem.
+    boundary_overrides, boundary_deferred, boundary_problems = \
+        fb.air_boundary_overrides(sketch, faces, face_space_id)
+    problems.extend(boundary_problems)
+
     story = {
         "name": story_name,
-        "elevation_m": round(fb.story_elevation_m(sketch), 6),
+        "elevation_m": story_elevation,
         "floor_to_floor_m": story_height,
         "source_sketch": sketch.Name,
         "spaces": spaces,
     }
     return (story, problems, orphans, minted, added_props, relabeled,
-            skipped, overrides)
+            skipped, overrides, boundary_overrides, boundary_deferred,
+            wall_paired, wall_exterior, wall_refused)
 
 
 def report_roof(roof, notes):
@@ -254,10 +293,14 @@ def main():
     print("stories  : %d   labels: %d" % (len(sketches), len(labels)))
 
     stories, problems, skipped_all, overrides_all = [], [], [], []
+    air_boundary_overrides_all, air_boundary_deferred_all = [], []
+    wall_paired_total = wall_exterior_total = 0
+    wall_refused_all = []
     minted_total = props_total = relabeled_total = 0
     for sketch in sketches:
         (story, probs, _orphans, minted, added_props, relabeled, skipped,
-         overrides) = build_story(sketch, labels, sketches)
+         overrides, boundary_overrides, boundary_deferred, wall_paired,
+         wall_exterior, wall_refused) = build_story(sketch, labels, sketches)
         stories.append(story)
         problems.extend(probs)
         minted_total += minted
@@ -265,6 +308,13 @@ def main():
         relabeled_total += relabeled
         skipped_all.extend(skipped)
         overrides_all.extend(overrides)
+        air_boundary_overrides_all.extend(boundary_overrides)
+        air_boundary_deferred_all.extend(
+            (story["name"], o) for o in boundary_deferred)
+        wall_paired_total += wall_paired
+        wall_exterior_total += wall_exterior
+        wall_refused_all.extend(
+            "%s: %s" % (story["name"], reason) for reason in wall_refused)
         print("  %-20s %3d rooms   elev %7.3f m   f2f %5.3f m%s"
               % (story["name"], len(story["spaces"]),
                  story["elevation_m"], story["floor_to_floor_m"],
@@ -282,6 +332,13 @@ def main():
         for story_name, name, story_h, height in overrides_all:
             print("  %-12s %-28s %5.3f m -> %5.3f m   (top of space %+.3f m)"
                   % (story_name, name, story_h, height, height - story_h))
+
+    print("\nwall pre-pairing: %d interior segment(s) pre-paired, "
+          "%d exterior, %d left to intersectSurfaces"
+          % (wall_paired_total, wall_exterior_total, len(wall_refused_all)))
+    if wall_refused_all:
+        for reason in wall_refused_all[:10]:
+            print("  %s" % reason)
 
     roof = None
     if args.no_roof:
@@ -352,6 +409,23 @@ def main():
             "  NO footprint is shared between stories -- stories are probably "
             "misaligned (check each sketch Placement)")
 
+    if air_boundary_deferred_all:
+        resolved, boundary_problems = fb.resolve_cross_story_overrides(
+            stories, air_boundary_deferred_all)
+        air_boundary_overrides_all.extend(resolved)
+        problems.extend(boundary_problems)
+        print("\nair-boundary overrides against an Open to Below region: %d"
+              % len(air_boundary_deferred_all))
+        print("  %d resolved to the taller room reaching through it, %d not"
+              % (len(resolved), len(boundary_problems)))
+
+    if air_boundary_overrides_all:
+        solid = sum(1 for o in air_boundary_overrides_all
+                    if o["kind"] == "SOLID")
+        open_ = len(air_boundary_overrides_all) - solid
+        print("\nair-boundary overrides (%s): %d SOLID, %d OPEN"
+              % (fb.AIR_BOUNDARY_EXT_NAME, solid, open_))
+
     if problems:
         print("\nPROBLEMS (%d):" % len(problems))
         for p in problems:
@@ -382,6 +456,8 @@ def main():
     }
     if roof is not None:
         payload["roof"] = roof
+    if air_boundary_overrides_all:
+        payload["air_boundary_overrides"] = air_boundary_overrides_all
 
     out = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out), exist_ok=True)

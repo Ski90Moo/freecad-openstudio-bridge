@@ -231,6 +231,26 @@ Keyed on the single surface, deliberately, rather than on the space pair.  A
 pair can share many surfaces -- 113 Mezzanine to the lobby has six -- and they
 need not all be the same kind of thing; and naming one surface asks less of the
 engineer than working out what it is matched to.
+
+The durable alternative: tag_airboundary.FCMacro
+--------------------------------------------------
+
+Everything above is the cost of keying an override on a surface *name*.
+tag_airboundary.FCMacro tags a wall-centerline edge in the floor-plan sketch
+directly, SOLID or OPEN, the same way tag_opening.FCMacro overrides a
+window's classification.  fc_export_floorplan.py resolves that tag at export
+time -- before any OpenStudio geometry exists -- to the pair of rooms the
+edge separates (by their stable OS_SpaceId, not by name) plus the edge's own
+plan line, and writes it into the floorplan JSON as
+`air_boundary_overrides`.  This module then finds the built surface(s) for a
+tagged edge by *position* (resolve_declared_edge, reusing
+surface_identity's plane/containment matching), not by name, so it survives
+a full rebuild automatically: no surface-name list to keep in sync, and
+nothing to remember to re-pass.  It activates on its own whenever the
+floorplan JSON carries the block; --no-tagged-overrides turns it off for
+comparison.  --open-surface/--solid-surface remain for a one-off check
+before a plan is re-exported, but a declaration worth keeping belongs on the
+drawing, not in a shell command.
 """
 
 import argparse
@@ -242,13 +262,17 @@ import sys
 
 import openstudio
 
+import surface_identity as si
+from corridor_split import CORRIDOR_PATTERN
+
 # Rooms whose shared wall with a multi-story space is a guardrail.  Matched
 # against the room name from the floor plan, case-insensitively.
 MEZZANINE_PATTERN = r"mezzanine|balcony|gallery|catwalk"
 
-# Rooms whose cross-section is an opening rather than a wall.  Matched against
-# the room name from the floor plan, case-insensitively.
-CORRIDOR_PATTERN = r"corridor|hallway|\bhall\b|passage|circulation|breezeway"
+# CORRIDOR_PATTERN (rooms whose cross-section is an opening rather than a
+# wall, matched against the room name case-insensitively) lives in
+# corridor_split.py now, shared with split_corridors.FCMacro, so both sides
+# of a T/L/cross split recognise a corridor by the same regex.
 
 # Used only to decide which selected pairs get called out for review, never to
 # select or reject one.  A corridor ending in a lobby or another corridor is an
@@ -470,13 +494,14 @@ def horizontal_flow(area, delta_t, t_mean):
 
 
 def find(model, plan, fcmap, pattern, corridor=None, open_stair=None,
-         declared=None):
+         declared=None, edges=None):
     """Openings needing an air boundary, as flat records.
 
     `corridor` is the rule-3 configuration -- pattern, narrow_ratio, span_tol,
     square_cos, exclude -- and `open_stair` the rule-4 one; either may be None
-    to skip that rule.  Returns the openings, warnings, room numbers, and an
-    `attention` dict of things a threshold cannot settle.
+    to skip that rule.  `edges` is the floorplan JSON's air_boundary_overrides
+    block (may be empty or omitted). Returns the openings, warnings, room
+    numbers, and an `attention` dict of things a threshold cannot settle.
     """
     index = plan_index(plan)
     spaces = {s.nameString(): s for s in model.getSpaces()}
@@ -593,12 +618,36 @@ def find(model, plan, fcmap, pattern, corridor=None, open_stair=None,
             if op["surface_a"] not in promoted]
     if declared.get("solid"):
         openings, dropped = drop_solid(openings, declared["solid"])
+        for op in dropped:
+            op["source"] = "cli"
         attention["declared_solid"] = dropped
         named_solid = {op["surface_a"] for op in dropped}
         named_solid |= {op["surface_b"] for op in dropped}
         for missing in sorted(declared["solid"] - named_solid):
             warnings.append("--solid-surface %s: no rule had selected it, so "
                             "nothing changed" % missing)
+
+    # --- overrides tagged in FreeCAD, resolved by position -------------------
+    for edge in edges or []:
+        matches, problems = resolve_declared_edge(model, fcmap, index, edge)
+        warnings += problems
+        if not matches:
+            continue
+        if edge["kind"] == "OPEN":
+            found = promote_declared_edges(openings, [(edge, matches)])
+            openings += found
+            attention["declared_open"] += found
+            promoted = {op["surface_a"] for op in found}
+            attention["open_stair_ends"] = [
+                op for op in attention["open_stair_ends"]
+                if op["surface_a"] not in promoted]
+        else:
+            names = {s.nameString() for s, _p in matches}
+            names |= {p.nameString() for _s, p in matches}
+            openings, dropped = drop_solid(openings, names)
+            for op in dropped:
+                op["source"] = "tag"
+            attention["declared_solid"] += dropped
 
     return openings, warnings, room_number, attention
 
@@ -830,12 +879,54 @@ def open_stair_openings(index, fcmap, named, claimed_by, tall, mezz_pattern,
     return found, ends
 
 
+def _promote_pair(existing, claimed, surface, partner, source):
+    """One surface's worth of the declared-open bookkeeping, shared by every
+    caller that has already resolved a (surface, partner) pair -- by name
+    (promote_declared, source="cli") or by position
+    (promote_declared_edges, source="tag").
+
+    Factored out so the double-construction fix below (existing.setdefault)
+    cannot drift between the two: it was found once, on a surface named by
+    --open-surface, and would otherwise have to be found again independently
+    on a surface resolved from a FreeCAD tag.  `source` rides along purely
+    for the report -- it tells an engineer which declarations survive an
+    unattended full rebuild (tag) and which are still living in a shell
+    command they have to remember to retype (cli).
+    """
+    mine = surface.space().get().nameString()
+    theirs = partner.space().get().nameString()
+    pair = frozenset((mine, theirs))
+    kind, space_a, space_b = existing.get(pair, ("declared", mine, theirs))
+    # Two declared surfaces can share a pair neither rule nor an earlier
+    # declaration already covers -- the second one has to see the first's
+    # choice of kind/space_a/space_b, or it mints its own and group_pairs
+    # (keyed on that exact triple) gives the pair two constructions.
+    existing.setdefault(pair, (kind, space_a, space_b))
+    vertical = surface.surfaceType() == "Wall"
+    claimed.add(surface.nameString())
+    claimed.add(partner.nameString())
+    return {
+        "kind": kind,
+        "orientation": "vertical" if vertical else "horizontal",
+        "space_a": space_a, "space_b": space_b,
+        "source": source,
+        "surface_a": surface.nameString(),
+        "surface_b": partner.nameString(),
+        "area_m2": surface.grossArea(),
+        "height_m": surface_height(surface) if vertical else None,
+        "declared": True,
+    }
+
+
 def promote_declared(model, openings, names):
-    """Interior surfaces the engineer has declared open, whatever the rules say.
+    """Interior surfaces named by --open-surface, whatever the rules say.
 
     Some openings are not derivable from a floor plan at all -- which end of a
     stair the flight arrives at, a doorway held open by design.  This is where
-    that judgement is recorded so the run reproduces.
+    that judgement is recorded so the run reproduces.  See also
+    promote_declared_edges, which resolves the same kind of declaration from a
+    FreeCAD tag instead of a surface name, and survives a full rebuild because
+    of it.
 
     A promoted surface joins the construction of any opening already covering
     the same pair of spaces, rather than making a second one.  Two air-boundary
@@ -868,28 +959,8 @@ def promote_declared(model, openings, names):
         if not (surface.space().is_initialized()
                 and partner.space().is_initialized()):
             continue
-        mine = surface.space().get().nameString()
-        theirs = partner.space().get().nameString()
-        pair = frozenset((mine, theirs))
-        kind, space_a, space_b = existing.get(pair, ("declared", mine, theirs))
-        # Two declared surfaces can share a pair neither rule nor an earlier
-        # declaration already covers -- the second one has to see the first's
-        # choice of kind/space_a/space_b, or it mints its own and group_pairs
-        # (keyed on that exact triple) gives the pair two constructions.
-        existing.setdefault(pair, (kind, space_a, space_b))
-        vertical = surface.surfaceType() == "Wall"
-        found.append({
-            "kind": kind,
-            "orientation": "vertical" if vertical else "horizontal",
-            "space_a": space_a, "space_b": space_b,
-            "surface_a": surface.nameString(),
-            "surface_b": partner.nameString(),
-            "area_m2": surface.grossArea(),
-            "height_m": surface_height(surface) if vertical else None,
-            "declared": True,
-        })
-        claimed.add(name)
-        claimed.add(partner.nameString())
+        found.append(_promote_pair(existing, claimed, surface, partner,
+                                   source="cli"))
     return found, problems
 
 
@@ -907,6 +978,105 @@ def drop_solid(openings, names):
         else:
             kept.append(op)
     return kept, dropped
+
+
+# How far a candidate wall's base may sit from the tagged edge's own story
+# elevation and still count as a match.  Guards two stories sharing an
+# identical plan line and normal: contains()'s own height bound is
+# deliberately generous (the host prism reaches 1000 m up), so on its own it
+# would accept the wrong story's wall too.
+EDGE_MATCH_BASE_TOL_M = 1e-3
+
+
+def resolve_declared_edge(model, fcmap, index, edge):
+    """The built surface(s) a tagged FreeCAD wall edge became.
+
+    `edge` is one air_boundary_overrides entry from the floorplan JSON;
+    `index` is plan_index(plan).  Matches by the pair's OpenStudio Space
+    objects first -- which already discriminates story and identity, the
+    same way every other room lookup in this file does (see named() in
+    find()) -- then narrows to the wall(s) lying along the tagged edge's own
+    line and span, so a pair sharing several walls (113 Mezzanine <-> Lobby
+    has six) only takes the tagged one, and every fragment intersectSurfaces
+    split it into is taken together, the same way group_pairs already
+    groups several corridor-cross-section surfaces into one construction.
+
+    This is the position-based counterpart to a surface *name*: the edge was
+    resolved to the pair of rooms and the plan line at export time, before
+    the model existed, so nothing here is positional in the way a surface
+    name is.
+
+    Returns ([(surface, partner), ...], problems).
+    """
+    entry_a, entry_b = fcmap.get(edge["space_a"]), fcmap.get(edge["space_b"])
+    if entry_a is None or entry_b is None:
+        return [], ["air-boundary override %s: a room id is not in this "
+                    "build's fcmap -- re-export the plan" % edge["kind"]]
+
+    spaces = {s.nameString(): s for s in model.getSpaces()}
+    space_a = spaces.get(entry_a["space_name"])
+    space_b = spaces.get(entry_b["space_name"])
+    if space_a is None or space_b is None:
+        return [], ["air-boundary override %s <-> %s: space missing from "
+                    "the model"
+                    % (entry_a["space_name"], entry_b["space_name"])]
+
+    elevation = index[edge["space_a"]][0]["elevation_m"]
+    (x1, y1), (x2, y2) = edge["vertices"]
+    # A loose vertical prism standing on the tagged line -- generous enough
+    # in height to contain any real wall, narrow enough in plan to exclude a
+    # different wall between the same two rooms.
+    host = [(x1, y1, elevation), (x2, y2, elevation),
+            (x2, y2, elevation + 1000.0), (x1, y1, elevation + 1000.0)]
+
+    matches = []
+    for surface in space_a.surfaces():
+        if surface.surfaceType() != "Wall":
+            continue
+        adjacent = surface.adjacentSurface()
+        if not adjacent.is_initialized():
+            continue
+        partner = adjacent.get()
+        if not partner.space().is_initialized():
+            continue
+        if partner.space().get().handle() != space_b.handle():
+            continue
+        points = si.model_points(space_a, surface)
+        if abs(min(p[2] for p in points) - elevation) > EDGE_MATCH_BASE_TOL_M:
+            continue
+        if not si.contains(host, points):
+            continue
+        matches.append((surface, partner))
+
+    if not matches:
+        return [], ["air-boundary override %s <-> %s (%s): no built wall "
+                    "matched the tagged edge"
+                    % (entry_a["space_name"], entry_b["space_name"],
+                       edge["kind"])]
+    return matches, []
+
+
+def promote_declared_edges(openings, resolved_open):
+    """Position-resolved OPEN declarations, promoted the same way
+    promote_declared promotes a named one.
+
+    `resolved_open` is [(edge, [(surface, partner), ...]), ...], one entry
+    per OPEN edge that resolve_declared_edge found at least one match for.
+    """
+    claimed = claimed_surfaces(openings)
+    existing = {}
+    for op in openings:
+        existing.setdefault(frozenset((op["space_a"], op["space_b"])),
+                            (op["kind"], op["space_a"], op["space_b"]))
+
+    found = []
+    for _edge, matches in resolved_open:
+        for surface, partner in matches:
+            if surface.nameString() in claimed:
+                continue
+            found.append(_promote_pair(existing, claimed, surface, partner,
+                                       source="tag"))
+    return found
 
 
 def group_pairs(model, openings, room_number, delta_t, t_mean):
@@ -1061,17 +1231,27 @@ def main():
                          "A plain 'Stair' is assumed enclosed."
                          % OPEN_STAIR_PATTERN)
     ap.add_argument("--open-surface", default=None,
-                    help="comma-separated surface names you have decided are "
+                    help="SUPERSEDED by tagging the edge with "
+                         "tag_airboundary.FCMacro, which survives a full "
+                         "rebuild -- kept as a one-off escape hatch. "
+                         "Comma-separated surface names you have decided are "
                          "open, whatever the rules say -- a stair end, a "
                          "doorway held open by design. Joins the construction "
                          "of any opening already covering the same space pair.")
     ap.add_argument("--solid-surface", default=None,
-                    help="comma-separated surface names that are real "
+                    help="SUPERSEDED by tagging the edge with "
+                         "tag_airboundary.FCMacro, which survives a full "
+                         "rebuild -- kept as a one-off escape hatch. "
+                         "Comma-separated surface names that are real "
                          "construction -- a fire wall, a rated separation -- "
                          "overriding any rule that selected them. Naming "
                          "either face is enough.")
     ap.add_argument("--no-open-stairs", action="store_true",
                     help="skip rule 4 entirely")
+    ap.add_argument("--no-tagged-overrides", action="store_true",
+                    help="ignore the floorplan's air_boundary_overrides "
+                         "block (SOLID/OPEN tags from tag_airboundary."
+                         "FCMacro), for debugging or comparison")
     ap.add_argument("--delta-t", type=float, default=DEFAULT_DELTA_T,
                     help="temperature difference across the opening, K "
                          "(default %.1f)" % DEFAULT_DELTA_T)
@@ -1147,8 +1327,10 @@ def main():
         "solid": {n.strip() for n in (args.solid_surface or "").split(",")
                   if n.strip()},
     }
+    edges = ([] if args.no_tagged_overrides
+             else plan.get("air_boundary_overrides", []))
     openings, warnings, room_number, attention = find(
-        model, plan, fcmap, pattern, corridor, open_stair, declared)
+        model, plan, fcmap, pattern, corridor, open_stair, declared, edges)
     results = group_pairs(model, openings, room_number, args.delta_t,
                           args.t_mean)
 
@@ -1247,11 +1429,20 @@ def main():
               % len(overrides))
         print("=" * 72)
         for op in attention["declared_solid"]:
-            print("    SOLID  %-12s %-30s -> %s"
-                  % (op["surface_a"], op["space_a"], op["space_b"]))
+            print("    SOLID  %-7s %-12s %-30s -> %s"
+                  % ("TAGGED" if op.get("source") == "tag" else "",
+                     op["surface_a"], op["space_a"], op["space_b"]))
         for op in attention["declared_open"]:
-            print("    OPEN   %-12s %-30s -> %s"
-                  % (op["surface_a"], op["space_a"], op["space_b"]))
+            print("    OPEN   %-7s %-12s %-30s -> %s"
+                  % ("TAGGED" if op.get("source") == "tag" else "",
+                     op["surface_a"], op["space_a"], op["space_b"]))
+        print()
+        print("  TAGGED means the declaration lives on a FreeCAD wall edge "
+              "and is re-derived")
+        print("  automatically on the next export -- everything else is a "
+              "--solid-surface or")
+        print("  --open-surface flag you have to remember to retype after a "
+              "full rebuild.")
         print()
         print("  These are your judgement, not the plan's. Nothing in the")
         print("  geometry says a wall is fire-rated, or which end of a stair")
